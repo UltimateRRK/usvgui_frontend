@@ -15,6 +15,8 @@ import { Toaster } from "sonner";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { Mission, createEmptyMission, addWaypointToMission } from "../types/mission";
 import { VehiclePosition } from "../types/bridge";
+import { database } from "../services/firebase";
+import { ref, onValue, query, limitToLast, push, set } from "firebase/database";
 
 
 interface SensorData {
@@ -32,15 +34,8 @@ interface ChartDataPoint {
   tds: number;
 }
 
-// Mock data generator - simulates live telemetry
-function generateSensorData(): SensorData {
-  return {
-    ph: 7.2 + (Math.random() - 0.5) * 0.8,
-    temperature: 24 + (Math.random() - 0.5) * 4,
-    tds: 450 + (Math.random() - 0.5) * 100,
-    turbidity: 5 + (Math.random() - 0.5) * 4,
-  };
-}
+// Device ID must match the Pi's DEVICE_ID
+const DEVICE_ID = "usv-01";
 
 // Calculate water quality status based on sensor readings
 function calculateWaterQuality(data: SensorData): "good" | "moderate" | "poor" {
@@ -69,12 +64,12 @@ function calculateWaterQuality(data: SensorData): "good" | "moderate" | "poor" {
 
 export default function App() {
   // Connection and GPS state
-  const [isOnline, setIsOnline] = useState(true);
-  const [hasGpsFix, setHasGpsFix] = useState(true);
+  const [isOnline, setIsOnline] = useState(false);
+  const [hasGpsFix, setHasGpsFix] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
 
   // Sensor data
-  const [sensorData, setSensorData] = useState<SensorData>(generateSensorData());
+  const [sensorData, setSensorData] = useState<SensorData>({ ph: 0, temperature: 0, tds: 0, turbidity: 0 });
   const [waterQuality, setWaterQuality] = useState<"good" | "moderate" | "poor">("good");
 
   // Vehicle telemetry (from bridge)
@@ -112,84 +107,103 @@ export default function App() {
     return 'Low-Power / Standby';
   };
 
-  // Simulate live telemetry updates
+  // =============================================
+  // FIREBASE: Listen to real sensor data from Pi
+  // =============================================
   useEffect(() => {
-    const interval = setInterval(() => {
-      const newData = generateSensorData();
-      setSensorData(newData);
-      setWaterQuality(calculateWaterQuality(newData));
-      setLastUpdate(new Date());
+    console.log("Firebase DB object:", database);
+    console.log("Connecting to /readings...");
 
-      // Update chart data (keep last 20 points)
-      const timestamp = new Date().toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        second: '2-digit'
-      });
-      setChartData(prev => {
-        const newPoint = {
-          timestamp,
-          ph: newData.ph,
-          temperature: newData.temperature,
-          turbidity: newData.turbidity,
-          tds: newData.tds,
+    // Check Firebase connection state
+    const connRef = ref(database, ".info/connected");
+    onValue(connRef, (snap) => {
+      console.log("Connected to Firebase:", snap.val());
+    });
+
+    const readingsQuery = query(ref(database, "readings"), limitToLast(20));
+    const unsubscribe = onValue(
+      readingsQuery,
+      (snapshot) => {
+        const data = snapshot.val();
+        console.log("Firebase snapshot received:", data);
+        if (!data) {
+          console.log("No data at /readings");
+          return;
+        }
+
+        const entries = Object.values(data) as any[];
+        const latest = entries[entries.length - 1];
+
+        // Update connection status — data is flowing
+        setIsOnline(true);
+        setLastUpdate(new Date(latest.timestamp || Date.now()));
+
+        // Update sensor cards with latest reading
+        const newSensorData: SensorData = {
+          ph: latest.ph ?? 0,
+          temperature: latest.temperature ?? 0,
+          tds: latest.tds ?? 0,
+          turbidity: latest.turbidity ?? 0,
         };
-        return [...prev.slice(-19), newPoint];
-      });
-    }, sensorInterval * 1000); // Update every 2 seconds
+        setSensorData(newSensorData);
+        setWaterQuality(calculateWaterQuality(newSensorData));
 
-    return () => clearInterval(interval);
-  }, [sensorInterval]);
+        // Check GPS
+        if (latest.lat && latest.lon && (latest.lat !== 0 || latest.lon !== 0)) {
+          setHasGpsFix(true);
+        }
 
-  // Subscribe to bridge telemetry (live vehicle position)
-  // TODO: Replace with actual bridge implementation when available
-  useEffect(() => {
-    // Simulated bridge.onPosition subscription
-    // In production, replace with: const unsubscribe = bridge.onPosition(handlePositionUpdate);
+        // Update chart data from all entries
+        setChartData(
+          entries.map((e: any) => ({
+            timestamp: new Date(e.timestamp || Date.now()).toLocaleTimeString(
+              "en-US",
+              { hour: "2-digit", minute: "2-digit", second: "2-digit" }
+            ),
+            ph: e.ph ?? 0,
+            temperature: e.temperature ?? 0,
+            turbidity: e.turbidity ?? 0,
+            tds: e.tds ?? 0,
+          }))
+        );
+      },
+      (error) => {
+        console.error("Firebase READ ERROR:", error.message);
+      }
+    );
 
-    const handlePositionUpdate = (pos: VehiclePosition) => {
-      setVehiclePosition(pos);
-
-      // Update trail with capped length (last 300 points)
-      setTrail(prevTrail => {
-        const newTrail = [...prevTrail, [pos.lat, pos.lon] as [number, number]];
-        // Cap at 300 positions to prevent memory bloat
-        return newTrail.slice(-300);
-      });
-    };
-
-    // Simulate telemetry updates (remove in production)
-    const interval = setInterval(() => {
-      const now = new Date();
-      const simulatedPos: VehiclePosition = {
-        lat: 15.4909 + (Math.random() - 0.5) * 0.001,
-        lon: 73.8278 + (Math.random() - 0.5) * 0.001,
-        alt: 0, // USV always at surface level
-        heading: Math.random() * 360,
-        groundspeed: 1.5 + Math.random() * 0.5,
-        timestamp: now.toISOString(),
-      };
-      handlePositionUpdate(simulatedPos);
-    }, 2000);
-
-    // Cleanup
-    return () => {
-      clearInterval(interval);
-      // In production: unsubscribe();
-    };
+    return () => unsubscribe();
   }, []);
 
-  // Initialize chart data
+  // =============================================
+  // FIREBASE: Listen to vehicle position (future: Pixhawk GPS)
+  // =============================================
   useEffect(() => {
-    const initialData: ChartDataPoint[] = [];
-    for (let i = 0; i < 10; i++) {
-      const data = generateSensorData();
-      initialData.push({
-        timestamp: `${i}s`,
-        ...data,
+    const posRef = ref(database, `telemetry/${DEVICE_ID}/current`);
+    const unsubscribe = onValue(posRef, (snapshot) => {
+      const pos = snapshot.val();
+      if (!pos) return;
+
+      const vehiclePos: VehiclePosition = {
+        lat: pos.lat,
+        lon: pos.lon,
+        alt: pos.alt ?? 0,
+        heading: pos.heading ?? 0,
+        groundspeed: pos.groundspeed ?? 0,
+        timestamp: pos.timestamp ?? new Date().toISOString(),
+      };
+
+      setVehiclePosition(vehiclePos);
+      setTrail((prevTrail) => {
+        const newTrail = [
+          ...prevTrail,
+          [vehiclePos.lat, vehiclePos.lon] as [number, number],
+        ];
+        return newTrail.slice(-300);
       });
-    }
-    setChartData(initialData);
+    });
+
+    return () => unsubscribe();
   }, []);
 
   const handleAddWaypoint = (position: [number, number]) => {
@@ -205,6 +219,18 @@ export default function App() {
 
   const handleSendWaypoints = () => {
     if (mission.waypoints.length > 0) {
+      // Push mission to Firebase for the Pi to pick up
+      const missionRef = push(ref(database, "missions"));
+      set(missionRef, {
+        waypoints: mission.waypoints.map((wp) => ({
+          lat: wp.x,
+          lon: wp.y,
+          seq: wp.seq,
+        })),
+        status: "pending",
+        created_at: new Date().toISOString(),
+      });
+
       // Create mission log entry
       const missionEntry: MissionLogEntry = {
         id: Date.now().toString(),
@@ -218,16 +244,13 @@ export default function App() {
         }),
         mission: mission,
         waypointCount: mission.waypoints.length,
-        status: Math.random() > 0.2 ? "Accepted" : "Rejected", // Simulate 80% acceptance rate
-        message: Math.random() > 0.2
-          ? `Mission accepted. USV will navigate to ${mission.waypoints.length} waypoint${mission.waypoints.length !== 1 ? 's' : ''}.`
-          : "Mission rejected. Waypoint path exceeds safe navigation parameters.",
+        status: "Pending",
+        message: `Mission uploaded to Firebase. Waiting for USV acknowledgement (${mission.waypoints.length} waypoint${mission.waypoints.length !== 1 ? 's' : ''}).`,
       };
 
       setMissionLog(prev => [missionEntry, ...prev]);
 
-      toast.success(`${mission.waypoints.length} waypoints sent to USV via Pixhawk`);
-      // In a real implementation, this would send waypoints to the backend
+      toast.success(`${mission.waypoints.length} waypoints sent to Firebase for USV`);
     }
   };
 
