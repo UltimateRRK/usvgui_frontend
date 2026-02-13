@@ -11,9 +11,9 @@ interface SensorCardProps {
 
 export function SensorCard({ title, value, unit, icon, status = "normal", timestamp }: SensorCardProps) {
   const statusBadges = {
-    normal: { bg: "bg-green-100", text: "text-green-700", label: "NORMAL" },
-    warning: { bg: "bg-yellow-100", text: "text-yellow-700", label: "WARNING" },
-    alert: { bg: "bg-red-100", text: "text-red-700", label: "ALERT" },
+    normal: { bg: "bg-green-100 dark:bg-green-900", text: "text-green-700 dark:text-green-300", label: "NORMAL" },
+    warning: { bg: "bg-yellow-100 dark:bg-yellow-900", text: "text-yellow-700 dark:text-yellow-300", label: "WARNING" },
+    alert: { bg: "bg-red-100 dark:bg-red-900", text: "text-red-700 dark:text-red-300", label: "ALERT" },
   };
 
   const statusStyle = statusBadges[status];

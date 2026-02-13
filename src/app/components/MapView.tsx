@@ -224,13 +224,13 @@ export function MapView({
 
   return (
     <div className="h-full flex flex-col">
-      <div className="bg-white border-b border-gray-200 p-3 flex items-center justify-between gap-2">
+      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between gap-2">
         <div className="flex items-center gap-2 flex-1">
           <button
             onClick={() => setAddWaypointMode(!addWaypointMode)}
             className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${addWaypointMode
               ? "bg-blue-600 text-white"
-              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+              : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
               }`}
           >
             <MapPin className="size-4" />
@@ -239,7 +239,7 @@ export function MapView({
           <button
             onClick={onClearWaypoints}
             disabled={mission.waypoints.length === 0}
-            className="px-4 py-2 rounded-lg flex items-center gap-2 bg-gray-100 text-gray-700 hover:bg-gray-200 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            className="px-4 py-2 rounded-lg flex items-center gap-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
             <Trash2 className="size-4" />
             Clear
@@ -253,7 +253,7 @@ export function MapView({
             Send to USV ({mission.waypoints.length})
           </button>
         </div>
-        <div className="text-sm text-gray-600">
+        <div className="text-sm text-gray-600 dark:text-gray-400">
           {vehiclePosition ? (
             <>
               <span className="font-mono">
@@ -302,11 +302,11 @@ export function MapView({
         )}
 
         {/* Path History Info */}
-        <div className="absolute top-4 right-4 bg-white rounded-lg shadow-lg p-3 border border-gray-200">
-          <div className="text-xs text-gray-600 mb-1">Path History</div>
+        <div className="absolute top-4 right-4 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-3 border border-gray-200 dark:border-gray-700">
+          <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">Path History</div>
           <div className="flex items-center gap-2">
             <div className="size-3 rounded-full bg-blue-500"></div>
-            <span className="text-sm text-gray-900">{trail.length} points</span>
+            <span className="text-sm text-gray-900 dark:text-gray-100">{trail.length} points</span>
           </div>
         </div>
       </div>
