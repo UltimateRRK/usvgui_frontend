@@ -47,9 +47,9 @@ export function SensorCard({ title, value, unit, icon, status = "normal", timest
 
       <div className="text-xl font-semibold text-gray-600 dark:text-gray-300 mb-3">{title}</div>
 
-      <div className="flex items-baseline gap-2 mb-4">
-        <span className="text-6xl font-bold text-gray-900 dark:text-gray-100">{value.toFixed(2)}</span>
-        <span className="text-xl text-gray-600 dark:text-gray-400">{unit}</span>
+      <div className="flex items-baseline gap-2 mb-4 overflow-hidden">
+        <span className="text-5xl font-bold text-gray-900 dark:text-gray-100 truncate">{value.toFixed(2)}</span>
+        <span className="text-lg text-gray-600 dark:text-gray-400 shrink-0">{unit}</span>
       </div>
 
       {timestamp && (
