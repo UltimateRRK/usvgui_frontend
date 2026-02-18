@@ -16,28 +16,44 @@ export function SensorCard({ title, value, unit, icon, status = "normal", timest
     alert: { bg: "bg-red-100 dark:bg-red-900", text: "text-red-700 dark:text-red-300", label: "ALERT" },
   };
 
+  const cardStyles = {
+    normal: {
+      card: "bg-green-50 dark:bg-green-900/20 border-green-200 dark:border-green-800",
+      icon: "bg-green-600",
+    },
+    warning: {
+      card: "bg-yellow-50 dark:bg-yellow-900/20 border-yellow-200 dark:border-yellow-800",
+      icon: "bg-yellow-600",
+    },
+    alert: {
+      card: "bg-red-50 dark:bg-red-900/20 border-red-200 dark:border-red-800",
+      icon: "bg-red-600",
+    },
+  };
+
   const statusStyle = statusBadges[status];
+  const cardStyle = cardStyles[status];
 
   return (
-    <div className="bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-xl p-5">
-      <div className="flex items-center gap-3 mb-4">
-        <div className="bg-green-600 rounded-xl p-3 flex items-center justify-center">
+    <div className={`${cardStyle.card} border rounded-xl p-6 h-full transition-colors duration-300`}>
+      <div className="flex items-center gap-3 mb-5">
+        <div className={`${cardStyle.icon} rounded-xl p-3 flex items-center justify-center transition-colors duration-300`}>
           {icon || <Activity className="size-5 text-white" />}
         </div>
-        <div className={`${statusStyle.bg} ${statusStyle.text} px-3 py-1 rounded-full text-xs font-medium`}>
+        <div className={`${statusStyle.bg} ${statusStyle.text} px-3 py-1 rounded-full text-sm font-medium`}>
           {statusStyle.label}
         </div>
       </div>
 
-      <div className="text-lg font-semibold text-gray-600 dark:text-gray-300 mb-2">{title}</div>
+      <div className="text-xl font-semibold text-gray-600 dark:text-gray-300 mb-3">{title}</div>
 
-      <div className="flex items-baseline gap-2 mb-3">
-        <span className="text-4xl font-bold text-gray-900 dark:text-gray-100">{value.toFixed(2)}</span>
-        <span className="text-base text-gray-600 dark:text-gray-400">{unit}</span>
+      <div className="flex items-baseline gap-2 mb-4">
+        <span className="text-6xl font-bold text-gray-900 dark:text-gray-100">{value.toFixed(2)}</span>
+        <span className="text-xl text-gray-600 dark:text-gray-400">{unit}</span>
       </div>
 
       {timestamp && (
-        <div className="flex items-center gap-2 text-xs text-gray-500">
+        <div className="flex items-center gap-2 text-sm text-gray-500">
           <div className="size-2 rounded-full bg-gray-400"></div>
           <span>{timestamp}</span>
         </div>

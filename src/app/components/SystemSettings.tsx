@@ -23,6 +23,8 @@ interface SamplingMode {
 export function SystemSettings({ sensorInterval, onIntervalChange }: SystemSettingsProps) {
   const [activeTab, setActiveTab] = useState<"sensors" | "info">("sensors");
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
+  const [useCustomInput, setUseCustomInput] = useState(false);
+  const [customValue, setCustomValue] = useState('');
 
   const samplingModes: SamplingMode[] = [
     {
@@ -73,6 +75,7 @@ export function SystemSettings({ sensorInterval, onIntervalChange }: SystemSetti
     { label: '15 min', value: 900 },
     { label: '30 min', value: 1800 },
     { label: '1 hour', value: 3600 },
+    { label: '5 hours', value: 18000 },
   ];
 
   // Find current mode or custom
@@ -259,17 +262,70 @@ export function SystemSettings({ sensorInterval, onIntervalChange }: SystemSetti
                 <label className="block text-sm font-medium text-gray-900 dark:text-gray-100 mb-2">
                   Custom Interval
                 </label>
-                <select
-                  value={sensorInterval}
-                  onChange={(e) => onIntervalChange(parseInt(e.target.value))}
-                  className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                >
-                  {customIntervals.map((interval) => (
-                    <option key={interval.value} value={interval.value}>
-                      {interval.label}
-                    </option>
-                  ))}
-                </select>
+                <div className="flex gap-2 mb-2">
+                  <button
+                    onClick={() => { setUseCustomInput(false); }}
+                    className={`flex-1 px-3 py-1.5 text-xs rounded-md border transition-colors ${!useCustomInput
+                        ? 'bg-blue-500 text-white border-blue-500'
+                        : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-gray-400'
+                      }`}
+                  >
+                    Presets
+                  </button>
+                  <button
+                    onClick={() => { setUseCustomInput(true); setCustomValue(String(sensorInterval)); }}
+                    className={`flex-1 px-3 py-1.5 text-xs rounded-md border transition-colors ${useCustomInput
+                        ? 'bg-blue-500 text-white border-blue-500'
+                        : 'bg-white dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-300 dark:border-gray-600 hover:border-gray-400'
+                      }`}
+                  >
+                    Type Custom
+                  </button>
+                </div>
+                {!useCustomInput ? (
+                  <select
+                    value={sensorInterval}
+                    onChange={(e) => onIntervalChange(parseInt(e.target.value))}
+                    className="w-full px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    {customIntervals.map((interval) => (
+                      <option key={interval.value} value={interval.value}>
+                        {interval.label}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      min="1"
+                      value={customValue}
+                      onChange={(e) => setCustomValue(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') {
+                          const val = parseInt(customValue);
+                          if (!isNaN(val) && val >= 1) onIntervalChange(val);
+                        }
+                      }}
+                      placeholder="Seconds"
+                      className="flex-1 px-3 py-2 bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600 rounded-md text-gray-900 dark:text-gray-100 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                    <button
+                      onClick={() => {
+                        const val = parseInt(customValue);
+                        if (!isNaN(val) && val >= 1) onIntervalChange(val);
+                      }}
+                      className="px-4 py-2 bg-blue-500 hover:bg-blue-600 text-white text-sm rounded-md transition-colors"
+                    >
+                      Set
+                    </button>
+                  </div>
+                )}
+                {useCustomInput && (
+                  <p className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    Enter interval in seconds (e.g. 3600 = 1 hour)
+                  </p>
+                )}
               </div>
             )}
           </div>

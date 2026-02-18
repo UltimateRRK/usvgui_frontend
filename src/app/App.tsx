@@ -15,8 +15,8 @@ import { Toaster } from "sonner";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { Mission, createEmptyMission, addWaypointToMission } from "../types/mission";
 import { VehiclePosition } from "../types/bridge";
-import { database } from "../services/firebase";
-import { ref, onValue, query, limitToLast, push, set } from "firebase/database";
+import { database, authReady } from "../services/firebase";
+import { ref, onValue, query, limitToLast, push, set, get } from "firebase/database";
 
 
 interface SensorData {
@@ -63,7 +63,7 @@ function calculateWaterQuality(data: SensorData): "good" | "moderate" | "poor" {
 }
 
 export default function App() {
-  // Connection and GPS state
+  // Connection and GPS state 
   const [isOnline, setIsOnline] = useState(false);
   const [hasGpsFix, setHasGpsFix] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(new Date());
@@ -76,7 +76,7 @@ export default function App() {
   const [vehiclePosition, setVehiclePosition] = useState<VehiclePosition | null>(null);
   const [trail, setTrail] = useState<[number, number][]>([]);
 
-  // Mission planning
+  // Mission planning 
   const [mission, setMission] = useState<Mission>(createEmptyMission());
   const [addWaypointMode, setAddWaypointMode] = useState(false);
 
@@ -92,7 +92,43 @@ export default function App() {
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
 
   // System settings
-  const [sensorInterval, setSensorInterval] = useState(2); // in seconds
+  const [sensorInterval, setSensorInterval] = useState(5); // in seconds, default matches Pi
+
+  // =============================================
+  // FIREBASE: Sync sensor interval with Pi
+  // =============================================
+  useEffect(() => {
+    authReady.then(() => {
+      // Read the current interval from Firebase on mount
+      const configRef = ref(database, `config/${DEVICE_ID}/sensorInterval`);
+      get(configRef).then((snapshot) => {
+        const val = snapshot.val();
+        if (val && typeof val === 'number' && val >= 1) {
+          setSensorInterval(val);
+          console.log(`Loaded sensor interval from Firebase: ${val}s`);
+        }
+      }).catch((err) => {
+        console.warn("Could not read sensor interval from Firebase:", err.message);
+      });
+    });
+  }, []);
+
+  // Write interval to Firebase when user changes it
+  const handleIntervalChange = (seconds: number) => {
+    setSensorInterval(seconds);
+    authReady.then(() => {
+      const configRef = ref(database, `config/${DEVICE_ID}/sensorInterval`);
+      set(configRef, seconds)
+        .then(() => {
+          toast.success(`Sampling interval set to ${seconds}s — Pi will update on next cycle`);
+          console.log(`Wrote sensorInterval=${seconds} to Firebase`);
+        })
+        .catch((err) => {
+          toast.error("Failed to sync interval to Pi");
+          console.error("Firebase write error:", err.message);
+        });
+    });
+  };
 
   // Mission log
   const [missionLog, setMissionLog] = useState<MissionLogEntry[]>([]);
@@ -107,103 +143,151 @@ export default function App() {
     return 'Low-Power / Standby';
   };
 
+  // Compute sensor status from thresholds (shared with AlertsThresholds via localStorage)
+  const getSensorStatus = (param: 'ph' | 'temperature' | 'tds' | 'turbidity'): 'normal' | 'warning' | 'alert' => {
+    const defaults = {
+      ph: { min: 6.5, max: 8.5 },
+      temperature: { min: 15, max: 30 },
+      turbidity: { min: 0, max: 5 },
+      tds: { min: 0, max: 500 },
+    };
+    let thresholds = defaults;
+    try {
+      const saved = localStorage.getItem('waterQualityThresholds');
+      if (saved) thresholds = { ...defaults, ...JSON.parse(saved) };
+    } catch { /* use defaults */ }
+
+    const value = sensorData[param];
+    const t = thresholds[param];
+
+    // Critical thresholds (hardcoded extremes)
+    const critical: Record<string, (v: number) => boolean> = {
+      ph: (v) => v < 6.0 || v > 9.0,
+      temperature: (v) => v < 10 || v > 35,
+      turbidity: (v) => v > 10,
+      tds: (v) => v > 1000,
+    };
+
+    if (critical[param](value)) return 'alert';
+    if (param === 'turbidity' || param === 'tds') {
+      if (value > t.max) return 'warning';
+    } else {
+      if (value < t.min || value > t.max) return 'warning';
+    }
+    return 'normal';
+  };
+
   // =============================================
   // FIREBASE: Listen to real sensor data from Pi
+  // (waits for anonymous auth before subscribing)
   // =============================================
   useEffect(() => {
-    console.log("Firebase DB object:", database);
-    console.log("Connecting to /readings...");
+    let unsubscribeConn: (() => void) | undefined;
+    let unsubscribeReadings: (() => void) | undefined;
 
-    // Check Firebase connection state
-    const connRef = ref(database, ".info/connected");
-    onValue(connRef, (snap) => {
-      console.log("Connected to Firebase:", snap.val());
+    authReady.then(() => {
+      console.log("Firebase DB object:", database);
+      console.log("Connecting to /readings...");
+
+      // Check Firebase connection state
+      const connRef = ref(database, ".info/connected");
+      unsubscribeConn = onValue(connRef, (snap) => {
+        console.log("Connected to Firebase:", snap.val());
+      });
+
+      const readingsQuery = query(ref(database, "readings"), limitToLast(20));
+      unsubscribeReadings = onValue(
+        readingsQuery,
+        (snapshot) => {
+          const data = snapshot.val();
+          console.log("Firebase snapshot received:", data);
+          if (!data) {
+            console.log("No data at /readings");
+            return;
+          }
+
+          const entries = Object.values(data) as any[];
+          const latest = entries[entries.length - 1];
+
+          // Update connection status — data is flowing
+          setIsOnline(true);
+          setLastUpdate(new Date(latest.timestamp || Date.now()));
+
+          // Update sensor cards with latest reading
+          const newSensorData: SensorData = {
+            ph: latest.ph ?? 0,
+            temperature: latest.temperature ?? 0,
+            tds: latest.tds ?? 0,
+            turbidity: latest.turbidity ?? 0,
+          };
+          setSensorData(newSensorData);
+          setWaterQuality(calculateWaterQuality(newSensorData));
+
+          // Check GPS
+          if (latest.lat && latest.lon && (latest.lat !== 0 || latest.lon !== 0)) {
+            setHasGpsFix(true);
+          }
+
+          // Update chart data from all entries
+          setChartData(
+            entries.map((e: any) => ({
+              timestamp: new Date(e.timestamp || Date.now()).toLocaleTimeString(
+                "en-US",
+                { hour: "2-digit", minute: "2-digit", second: "2-digit" }
+              ),
+              ph: e.ph ?? 0,
+              temperature: e.temperature ?? 0,
+              turbidity: e.turbidity ?? 0,
+              tds: e.tds ?? 0,
+            }))
+          );
+        },
+        (error) => {
+          console.error("Firebase READ ERROR:", error.message);
+        }
+      );
     });
 
-    const readingsQuery = query(ref(database, "readings"), limitToLast(20));
-    const unsubscribe = onValue(
-      readingsQuery,
-      (snapshot) => {
-        const data = snapshot.val();
-        console.log("Firebase snapshot received:", data);
-        if (!data) {
-          console.log("No data at /readings");
-          return;
-        }
-
-        const entries = Object.values(data) as any[];
-        const latest = entries[entries.length - 1];
-
-        // Update connection status — data is flowing
-        setIsOnline(true);
-        setLastUpdate(new Date(latest.timestamp || Date.now()));
-
-        // Update sensor cards with latest reading
-        const newSensorData: SensorData = {
-          ph: latest.ph ?? 0,
-          temperature: latest.temperature ?? 0,
-          tds: latest.tds ?? 0,
-          turbidity: latest.turbidity ?? 0,
-        };
-        setSensorData(newSensorData);
-        setWaterQuality(calculateWaterQuality(newSensorData));
-
-        // Check GPS
-        if (latest.lat && latest.lon && (latest.lat !== 0 || latest.lon !== 0)) {
-          setHasGpsFix(true);
-        }
-
-        // Update chart data from all entries
-        setChartData(
-          entries.map((e: any) => ({
-            timestamp: new Date(e.timestamp || Date.now()).toLocaleTimeString(
-              "en-US",
-              { hour: "2-digit", minute: "2-digit", second: "2-digit" }
-            ),
-            ph: e.ph ?? 0,
-            temperature: e.temperature ?? 0,
-            turbidity: e.turbidity ?? 0,
-            tds: e.tds ?? 0,
-          }))
-        );
-      },
-      (error) => {
-        console.error("Firebase READ ERROR:", error.message);
-      }
-    );
-
-    return () => unsubscribe();
+    return () => {
+      unsubscribeConn?.();
+      unsubscribeReadings?.();
+    };
   }, []);
 
   // =============================================
   // FIREBASE: Listen to vehicle position (future: Pixhawk GPS)
+  // (waits for anonymous auth before subscribing)
   // =============================================
   useEffect(() => {
-    const posRef = ref(database, `telemetry/${DEVICE_ID}/current`);
-    const unsubscribe = onValue(posRef, (snapshot) => {
-      const pos = snapshot.val();
-      if (!pos) return;
+    let unsubscribe: (() => void) | undefined;
 
-      const vehiclePos: VehiclePosition = {
-        lat: pos.lat,
-        lon: pos.lon,
-        alt: pos.alt ?? 0,
-        heading: pos.heading ?? 0,
-        groundspeed: pos.groundspeed ?? 0,
-        timestamp: pos.timestamp ?? new Date().toISOString(),
-      };
+    authReady.then(() => {
+      const posRef = ref(database, `telemetry/${DEVICE_ID}/current`);
+      unsubscribe = onValue(posRef, (snapshot) => {
+        const pos = snapshot.val();
+        if (!pos) return;
 
-      setVehiclePosition(vehiclePos);
-      setTrail((prevTrail) => {
-        const newTrail = [
-          ...prevTrail,
-          [vehiclePos.lat, vehiclePos.lon] as [number, number],
-        ];
-        return newTrail.slice(-300);
+        const vehiclePos: VehiclePosition = {
+          lat: pos.lat,
+          lon: pos.lon,
+          alt: pos.alt ?? 0,
+          heading: pos.heading ?? 0,
+          groundspeed: pos.groundspeed ?? 0,
+          timestamp: pos.timestamp ?? new Date().toISOString(),
+        };
+
+        setVehiclePosition(vehiclePos);
+        setTrail((prevTrail) => {
+          const newTrail = [
+            ...prevTrail,
+            [vehiclePos.lat, vehiclePos.lon] as [number, number],
+          ];
+          return newTrail.slice(-300);
+        });
       });
     });
 
-    return () => unsubscribe();
+    return () => unsubscribe?.();
   }, []);
 
   const handleAddWaypoint = (position: [number, number]) => {
@@ -291,14 +375,15 @@ export default function App() {
 
             {/* Right Panel - Telemetry */}
             <div className="lg:col-span-2 flex flex-col gap-4 overflow-y-auto pr-2">
-              <div>
-                <h2 className="text-lg mb-3 text-gray-700 dark:text-gray-200">Live Sensor Data</h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="flex-1 flex flex-col">
+                <h2 className="text-xl font-bold mb-3 text-gray-700 dark:text-gray-200 text-center">Sensor Data</h2>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
                   <SensorCard
                     title="pH Level"
                     value={sensorData.ph}
                     unit="pH"
                     icon={<Droplets className="size-5 text-white" />}
+                    status={getSensorStatus('ph')}
                     timestamp={lastUpdate.toLocaleTimeString('en-US')}
                   />
                   <SensorCard
@@ -306,6 +391,7 @@ export default function App() {
                     value={sensorData.temperature}
                     unit="°C"
                     icon={<Thermometer className="size-5 text-white" />}
+                    status={getSensorStatus('temperature')}
                     timestamp={lastUpdate.toLocaleTimeString('en-US')}
                   />
                   <SensorCard
@@ -313,6 +399,7 @@ export default function App() {
                     value={sensorData.tds}
                     unit="ppm"
                     icon={<Gauge className="size-5 text-white" />}
+                    status={getSensorStatus('tds')}
                     timestamp={lastUpdate.toLocaleTimeString('en-US')}
                   />
                   <SensorCard
@@ -320,13 +407,10 @@ export default function App() {
                     value={sensorData.turbidity}
                     unit="NTU"
                     icon={<Waves className="size-5 text-white" />}
+                    status={getSensorStatus('turbidity')}
                     timestamp={lastUpdate.toLocaleTimeString('en-US')}
                   />
                 </div>
-              </div>
-
-              <div>
-                <WaterQualityStatus status={waterQuality} />
               </div>
 
             </div>
@@ -351,7 +435,7 @@ export default function App() {
           <div className="mt-6">
             <SystemSettings
               sensorInterval={sensorInterval}
-              onIntervalChange={setSensorInterval}
+              onIntervalChange={handleIntervalChange}
             />
           </div>
 

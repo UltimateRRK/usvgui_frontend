@@ -5,6 +5,12 @@ import "leaflet/dist/leaflet.css";
 import { Mission } from "../../types/mission";
 import { VehiclePosition } from "../../types/bridge";
 
+// Goa bounding box: SW corner to NE corner
+const GOA_BOUNDS: L.LatLngBoundsExpression = [
+  [14.87, 73.68],  // SW (south Goa coast)
+  [15.80, 74.35],  // NE (north-east Goa border)
+];
+
 interface MapViewProps {
   vehiclePosition: VehiclePosition | null;
   trail: [number, number][];
@@ -39,7 +45,11 @@ export function MapView({
 
     // Default center (will be updated when telemetry arrives)
     const defaultCenter: [number, number] = [15.4909, 73.8278]; // Mandovi River, Goa
-    const map = L.map(mapContainerRef.current).setView(defaultCenter, 15);
+    const map = L.map(mapContainerRef.current, {
+      maxBounds: L.latLngBounds(GOA_BOUNDS).pad(0.1),
+      maxBoundsViscosity: 1.0,
+      minZoom: 10,
+    }).setView(defaultCenter, 13);
     mapRef.current = map;
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
@@ -49,6 +59,13 @@ export function MapView({
     // Handle map clicks for waypoint addition
     map.on("click", (e: L.LeafletMouseEvent) => {
       if (addWaypointMode) {
+        if (!L.latLngBounds(GOA_BOUNDS).contains(e.latlng)) {
+          L.popup()
+            .setLatLng(e.latlng)
+            .setContent("Waypoint must be within Goa")
+            .openOn(map);
+          return;
+        }
         onAddWaypoint([e.latlng.lat, e.latlng.lng]);
       }
     });
@@ -66,6 +83,13 @@ export function MapView({
     mapRef.current.off("click");
     mapRef.current.on("click", (e: L.LeafletMouseEvent) => {
       if (addWaypointMode) {
+        if (!L.latLngBounds(GOA_BOUNDS).contains(e.latlng)) {
+          L.popup()
+            .setLatLng(e.latlng)
+            .setContent("Waypoint must be within Goa")
+            .openOn(mapRef.current!);
+          return;
+        }
         onAddWaypoint([e.latlng.lat, e.latlng.lng]);
       }
     });
