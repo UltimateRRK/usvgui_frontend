@@ -18,7 +18,7 @@ import {
   ComposedChart,
   Area
 } from "recharts";
-import { TrendingUp, TrendingDown, Minus, AlertTriangle, Activity, GitBranch, Target } from "lucide-react";
+import { TrendingUp, TrendingDown, Minus, AlertTriangle, Activity, GitBranch, Target, MapPin } from "lucide-react";
 
 interface ChartData {
   timestamp: string;
@@ -26,6 +26,7 @@ interface ChartData {
   temperature: number;
   turbidity: number;
   tds: number;
+  waypoint_seq?: number;
 }
 
 interface CombinedScientificDataProps {
@@ -49,19 +50,34 @@ const paramConfig = {
 type ParamKey = keyof typeof paramConfig;
 
 export function CombinedScientificData({ data, currentData }: CombinedScientificDataProps) {
-  const [activeTab, setActiveTab] = useState<'temporal' | 'relationship' | 'deviation'>('temporal');
+  const [activeTab, setActiveTab] = useState<'temporal' | 'relationship' | 'deviation' | 'waypoints'>('temporal');
   const [analysisWindow, setAnalysisWindow] = useState<'live' | 'shortterm' | 'mission'>('live');
+  const [selectedWaypoint, setSelectedWaypoint] = useState<number | 'all'>('all');
   const [selectedParam, setSelectedParam] = useState<ParamKey>('ph');
   const [xAxis, setXAxis] = useState<ParamKey>('temperature');
   const [yAxis, setYAxis] = useState<ParamKey>('ph');
   const [timeWindow, setTimeWindow] = useState<'10min' | '30min' | 'mission'>('mission');
 
-  // Filter data based on analysis window
+  // Extract unique waypoints from data for the dropdown
+  const uniqueWaypoints = useMemo(() => {
+    const wps = new Set<number>();
+    data.forEach(d => {
+      if (d.waypoint_seq !== undefined && d.waypoint_seq >= 0) {
+        wps.add(d.waypoint_seq);
+      }
+    });
+    return Array.from(wps).sort((a, b) => a - b);
+  }, [data]);
+
+  // Filter data based on analysis window AND selected waypoint
   const filteredData = useMemo(() => {
-    if (analysisWindow === 'live') return data.slice(-15);
-    if (analysisWindow === 'shortterm') return data.slice(-30);
-    return data; // mission
-  }, [data, analysisWindow]);
+    let baseData = data;
+    if (analysisWindow === 'live') baseData = data.slice(-15);
+    else if (analysisWindow === 'shortterm') baseData = data.slice(-30);
+    
+    if (selectedWaypoint === 'all') return baseData;
+    return baseData.filter(d => d.waypoint_seq === selectedWaypoint);
+  }, [data, analysisWindow, selectedWaypoint]);
 
   // Calculate rolling mean
   const calculateRollingMean = (dataPoints: number[], window: number = 5): number[] => {
@@ -256,28 +272,83 @@ export function CombinedScientificData({ data, currentData }: CombinedScientific
     return '#22C55E'; // green
   };
 
+  // Calculate Waypoint Analytics
+  const waypointAnalytics = useMemo(() => {
+    if (uniqueWaypoints.length === 0) return [];
+    
+    return uniqueWaypoints.map(wpSeq => {
+      const wpData = data.filter(d => d.waypoint_seq === wpSeq);
+      if (wpData.length === 0) return null;
+      
+      const stats = {
+        seq: wpSeq,
+        samples: wpData.length,
+        timestamp: wpData[0].timestamp,
+        ph: { avg: 0, min: Infinity, max: -Infinity },
+        temperature: { avg: 0, min: Infinity, max: -Infinity },
+        turbidity: { avg: 0, min: Infinity, max: -Infinity },
+        tds: { avg: 0, min: Infinity, max: -Infinity }
+      };
+
+      const params: ParamKey[] = ['ph', 'temperature', 'turbidity', 'tds'];
+      
+      wpData.forEach(d => {
+        params.forEach(p => {
+          stats[p].avg += d[p];
+          if (d[p] < stats[p].min) stats[p].min = d[p];
+          if (d[p] > stats[p].max) stats[p].max = d[p];
+        });
+      });
+
+      params.forEach(p => {
+        stats[p].avg /= wpData.length;
+      });
+
+      return stats;
+    }).filter(Boolean);
+  }, [data, uniqueWaypoints]);
+
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg border border-gray-200 dark:border-gray-700 p-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <h2 className="text-lg text-gray-900 dark:text-gray-100 font-semibold">Scientific Analysis</h2>
 
-        {/* Analysis Window Selector */}
-        <div className="flex items-center gap-2">
-          <span className="text-sm text-gray-600 dark:text-gray-400">Analysis Window:</span>
-          <div className="flex gap-1 bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
-            {(['live', 'shortterm', 'mission'] as const).map((window) => (
-              <button
-                key={window}
-                onClick={() => setAnalysisWindow(window)}
-                className={`px-3 py-1 rounded text-sm transition-colors ${analysisWindow === window
-                    ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-gray-100 shadow-sm'
-                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
-                  }`}
+        <div className="flex items-center gap-4">
+          {/* Waypoint Filter */}
+          {uniqueWaypoints.length > 0 && (
+            <div className="flex items-center gap-2">
+              <span className="text-sm text-gray-600 dark:text-gray-400">Waypoint:</span>
+              <select
+                value={selectedWaypoint}
+                onChange={(e) => setSelectedWaypoint(e.target.value === 'all' ? 'all' : Number(e.target.value))}
+                className="px-2 py-1 bg-gray-100 dark:bg-gray-700 border-none rounded-lg text-sm text-gray-900 dark:text-gray-100 outline-none focus:ring-1 focus:ring-blue-500 cursor-pointer"
               >
-                {window === 'live' ? 'Live' : window === 'shortterm' ? 'Short-term' : 'Mission'}
-              </button>
-            ))}
+                <option value="all">All Waypoints</option>
+                {uniqueWaypoints.map(wp => (
+                  <option key={wp} value={wp}>Waypoint {wp + 1}</option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {/* Analysis Window Selector */}
+          <div className="flex items-center gap-2">
+            <span className="text-sm text-gray-600 dark:text-gray-400">Analysis Window:</span>
+            <div className="flex gap-1 bg-gray-100 dark:bg-gray-700 rounded-lg p-1">
+              {(['live', 'shortterm', 'mission'] as const).map((window) => (
+                <button
+                  key={window}
+                  onClick={() => setAnalysisWindow(window)}
+                  className={`px-3 py-1 rounded text-sm transition-colors ${analysisWindow === window
+                      ? 'bg-white dark:bg-gray-600 text-gray-900 dark:text-gray-100 shadow-sm'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
+                    }`}
+                >
+                  {window === 'live' ? 'Live' : window === 'shortterm' ? 'Short-term' : 'Mission'}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
       </div>
@@ -322,6 +393,19 @@ export function CombinedScientificData({ data, currentData }: CombinedScientific
             <div className="text-left">
               <div>State Deviation</div>
               <div className="text-xs font-normal text-gray-500 dark:text-gray-500">How far from limits?</div>
+            </div>
+          </button>
+          <button
+            onClick={() => setActiveTab('waypoints')}
+            className={`flex items-center gap-2 px-4 py-3 text-sm font-medium border-b-2 transition-colors ${activeTab === 'waypoints'
+                ? 'border-blue-500 text-blue-600 dark:text-blue-400'
+                : 'border-transparent text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100'
+              }`}
+          >
+            <MapPin className="size-4" />
+            <div className="text-left">
+              <div>Waypoint Analytics</div>
+              <div className="text-xs font-normal text-gray-500 dark:text-gray-500">Spatial comparison</div>
             </div>
           </button>
         </div>
@@ -635,6 +719,58 @@ export function CombinedScientificData({ data, currentData }: CombinedScientific
             <div className="bg-green-900/20 border border-green-800 rounded-lg p-4 text-center">
               <div className="text-green-400 font-medium">✓ All parameters within acceptable ranges</div>
             </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === 'waypoints' && (
+        <div className="overflow-x-auto">
+          {uniqueWaypoints.length === 0 ? (
+            <div className="text-center py-12 text-gray-500 dark:text-gray-400">
+              No waypoint data available yet. Start a mission to see spatial analysis.
+            </div>
+          ) : (
+            <table className="w-full text-sm text-left text-gray-500 dark:text-gray-400">
+              <thead className="text-xs text-gray-700 uppercase bg-gray-50 dark:bg-gray-700 dark:text-gray-400">
+                <tr>
+                  <th scope="col" className="px-6 py-3">Waypoint</th>
+                  <th scope="col" className="px-6 py-3">Samples</th>
+                  <th scope="col" className="px-6 py-3">pH (Avg)</th>
+                  <th scope="col" className="px-6 py-3">Temp (°C)</th>
+                  <th scope="col" className="px-6 py-3">Turbidity (NTU)</th>
+                  <th scope="col" className="px-6 py-3">TDS (ppm)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {waypointAnalytics.map((wp: any) => (
+                  <tr key={`wp-table-${wp.seq}`} className="bg-white border-b dark:bg-gray-800 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-600">
+                    <th scope="row" className="px-6 py-4 font-medium text-gray-900 whitespace-nowrap dark:text-white flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center text-xs font-bold">
+                        {wp.seq + 1}
+                      </div>
+                      WP {wp.seq + 1}
+                    </th>
+                    <td className="px-6 py-4">{wp.samples}</td>
+                    <td className="px-6 py-4">
+                      <div className="font-semibold text-gray-900 dark:text-gray-100">{wp.ph.avg.toFixed(2)}</div>
+                      <div className="text-xs text-gray-500">Min: {wp.ph.min.toFixed(1)} Max: {wp.ph.max.toFixed(1)}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="font-semibold text-gray-900 dark:text-gray-100">{wp.temperature.avg.toFixed(1)}</div>
+                      <div className="text-xs text-gray-500">Min: {wp.temperature.min.toFixed(1)} Max: {wp.temperature.max.toFixed(1)}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="font-semibold text-gray-900 dark:text-gray-100">{wp.turbidity.avg.toFixed(1)}</div>
+                      <div className="text-xs text-gray-500">Min: {wp.turbidity.min.toFixed(1)} Max: {wp.turbidity.max.toFixed(1)}</div>
+                    </td>
+                    <td className="px-6 py-4">
+                      <div className="font-semibold text-gray-900 dark:text-gray-100">{wp.tds.avg.toFixed(0)}</div>
+                      <div className="text-xs text-gray-500">Min: {wp.tds.min.toFixed(0)} Max: {wp.tds.max.toFixed(0)}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           )}
         </div>
       )}

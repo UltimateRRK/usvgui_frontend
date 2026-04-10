@@ -20,6 +20,8 @@ interface MapViewProps {
   onSendWaypoints: () => void;
   addWaypointMode: boolean;
   setAddWaypointMode: (mode: boolean) => void;
+  samplesPerWaypoint: number;
+  onSamplesChange: (samples: number) => void;
 }
 
 export function MapView({
@@ -31,6 +33,8 @@ export function MapView({
   onSendWaypoints,
   addWaypointMode,
   setAddWaypointMode,
+  samplesPerWaypoint,
+  onSamplesChange,
 }: MapViewProps) {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -268,6 +272,20 @@ export function MapView({
             <Trash2 className="size-4" />
             Clear
           </button>
+          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-gray-700 rounded-lg">
+            <label className="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">Samples/WP</label>
+            <input
+              type="number"
+              min="1"
+              max="50"
+              value={samplesPerWaypoint}
+              onChange={(e) => {
+                const val = parseInt(e.target.value);
+                if (!isNaN(val) && val >= 1 && val <= 50) onSamplesChange(val);
+              }}
+              className="w-12 px-1.5 py-0.5 text-sm font-mono text-center bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
+            />
+          </div>
           <button
             onClick={onSendWaypoints}
             disabled={mission.waypoints.length === 0}

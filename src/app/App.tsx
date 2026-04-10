@@ -32,6 +32,7 @@ interface ChartDataPoint {
   temperature: number;
   turbidity: number;
   tds: number;
+  waypoint_seq?: number;
 }
 
 // Device ID must match the Pi's DEVICE_ID
@@ -93,6 +94,7 @@ export default function App() {
 
   // System settings
   const [sensorInterval, setSensorInterval] = useState(5); // in seconds, default matches Pi
+  const [samplesPerWaypoint, setSamplesPerWaypoint] = useState(3); // sensor readings per waypoint
 
   // =============================================
   // FIREBASE: Sync sensor interval with Pi
@@ -239,6 +241,7 @@ export default function App() {
               temperature: e.temperature ?? 0,
               turbidity: e.turbidity ?? 0,
               tds: e.tds ?? 0,
+              waypoint_seq: e.waypoint_seq,
             }))
           );
         },
@@ -311,6 +314,7 @@ export default function App() {
           lon: wp.y,
           seq: wp.seq,
         })),
+        samplesPerWaypoint: samplesPerWaypoint,
         status: "pending",
         created_at: new Date().toISOString(),
       });
@@ -370,6 +374,8 @@ export default function App() {
                 onSendWaypoints={handleSendWaypoints}
                 addWaypointMode={addWaypointMode}
                 setAddWaypointMode={setAddWaypointMode}
+                samplesPerWaypoint={samplesPerWaypoint}
+                onSamplesChange={setSamplesPerWaypoint}
               />
             </div>
 
