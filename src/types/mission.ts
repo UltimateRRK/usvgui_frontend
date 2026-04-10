@@ -168,7 +168,7 @@ export function createEmptyMission(): Mission {
  * @param lon - Longitude in degrees
  * @returns Waypoint object with ArduRover defaults
  */
-export function createWaypoint(seq: number, lat: number, lon: number): Waypoint {
+function createWaypoint(seq: number, lat: number, lon: number): Waypoint {
     return {
         seq,
         frame: MavFrame.MAV_FRAME_GLOBAL_RELATIVE_ALT,
@@ -214,20 +214,4 @@ export function addWaypointToMission(
     };
 }
 
-/**
- * Convert a Mission to a MAVLink-compatible array format
- * Used when preparing missions for upload to Pixhawk
- * 
- * IMPORTANT: This function is pure and does not mutate the original mission.
- * Clones all waypoints before modifying the 'current' field.
- * 
- * @param mission - Mission to convert (not mutated)
- * @returns New array of waypoints with seq=0 marked as current
- */
-export function missionToMavlinkFormat(mission: Mission): Waypoint[] {
-    return mission.waypoints.map((wp, idx) => ({
-        ...wp,
-        // Only first waypoint is marked current during upload
-        current: idx === 0,
-    }));
-}
+
