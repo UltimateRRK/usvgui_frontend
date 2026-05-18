@@ -104,7 +104,7 @@ export function MissionPlanner({
       </div>
 
       {/* ── Waypoint list ── */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto overflow-x-hidden">
         {wps.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full py-10 text-center px-4">
             <Navigation2 className="size-10 text-gray-300 dark:text-gray-600 mb-3" />
@@ -166,7 +166,7 @@ export function MissionPlanner({
                 </div>
 
                 {/* ── Per-waypoint parameters ── */}
-                <div className="flex gap-3 pl-8">
+                <div className="flex flex-wrap gap-2 pl-8">
                   {/* Dwell time */}
                   <label className="flex items-center gap-1.5 text-xs text-gray-500 dark:text-gray-400">
                     <Clock className="size-3.5 text-blue-400 shrink-0" />
