@@ -1,9 +1,10 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
-import { MapPin, Trash2, Send, Navigation } from "lucide-react";
+import { Navigation, PanelRightOpen, PanelRightClose } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import { Mission } from "../../types/mission";
 import { VehiclePosition } from "../../types/bridge";
+import { MissionPlanner, MissionUploadStatus } from "./MissionPlanner";
 
 // Goa bounding box: SW corner to NE corner
 const GOA_BOUNDS: L.LatLngBoundsExpression = [
@@ -15,26 +16,26 @@ interface MapViewProps {
   vehiclePosition: VehiclePosition | null;
   trail: [number, number][];
   mission: Mission;
+  onMissionChange: (m: Mission) => void;
   onAddWaypoint: (position: [number, number]) => void;
   onClearWaypoints: () => void;
   onSendWaypoints: () => void;
   addWaypointMode: boolean;
   setAddWaypointMode: (mode: boolean) => void;
-  samplesPerWaypoint: number;
-  onSamplesChange: (samples: number) => void;
+  uploadStatus: MissionUploadStatus;
 }
 
 export function MapView({
   vehiclePosition,
   trail,
   mission,
+  onMissionChange,
   onAddWaypoint,
   onClearWaypoints,
   onSendWaypoints,
   addWaypointMode,
   setAddWaypointMode,
-  samplesPerWaypoint,
-  onSamplesChange,
+  uploadStatus,
 }: MapViewProps) {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -43,11 +44,12 @@ export function MapView({
   const waypointMarkersRef = useRef<L.Marker[]>([]);
   const waypointPolylineRef = useRef<L.Polyline | null>(null);
 
+  const [plannerOpen, setPlannerOpen] = useState(true);
+
   // Initialize map
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return;
 
-    // Default center (will be updated when telemetry arrives)
     const defaultCenter: [number, number] = [15.4909, 73.8278]; // Mandovi River, Goa
     const map = L.map(mapContainerRef.current, {
       maxBounds: L.latLngBounds(GOA_BOUNDS).pad(0.1),
@@ -60,7 +62,6 @@ export function MapView({
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);
 
-    // Handle map clicks for waypoint addition
     map.on("click", (e: L.LeafletMouseEvent) => {
       if (addWaypointMode) {
         if (!L.latLngBounds(GOA_BOUNDS).contains(e.latlng)) {
@@ -80,10 +81,9 @@ export function MapView({
     };
   }, []);
 
-  // Update map click handler when addWaypointMode changes
+  // Update click handler when mode changes
   useEffect(() => {
     if (!mapRef.current) return;
-
     mapRef.current.off("click");
     mapRef.current.on("click", (e: L.LeafletMouseEvent) => {
       if (addWaypointMode) {
@@ -99,11 +99,14 @@ export function MapView({
     });
   }, [addWaypointMode, onAddWaypoint]);
 
-  // Update USV marker from vehicle telemetry
+  // Invalidate map size when planner panel opens/closes
+  useEffect(() => {
+    setTimeout(() => mapRef.current?.invalidateSize(), 320);
+  }, [plannerOpen]);
+
+  // USV marker
   useEffect(() => {
     if (!mapRef.current) return;
-
-    // Remove existing marker if no telemetry
     if (!vehiclePosition) {
       if (usvMarkerRef.current) {
         mapRef.current.removeLayer(usvMarkerRef.current);
@@ -126,8 +129,6 @@ export function MapView({
     });
 
     const position: [number, number] = [vehiclePosition.lat, vehiclePosition.lon];
-
-    // Check if this is the first telemetry (marker doesn't exist yet)
     const isFirstTelemetry = !usvMarkerRef.current;
 
     if (usvMarkerRef.current) {
@@ -144,69 +145,43 @@ export function MapView({
             <div class="text-xs text-gray-600 font-mono">
               ${vehiclePosition.lat.toFixed(6)}°, ${vehiclePosition.lon.toFixed(6)}°
             </div>
-            <div class="text-xs text-gray-600 mt-1">
-              Heading: ${Math.round(vehiclePosition.heading)}°
-            </div>
-            <div class="text-xs text-gray-600">
-              Speed: ${vehiclePosition.groundspeed.toFixed(1)} m/s
-            </div>
+            <div class="text-xs text-gray-600 mt-1">Heading: ${Math.round(vehiclePosition.heading)}°</div>
+            <div class="text-xs text-gray-600">Speed: ${vehiclePosition.groundspeed.toFixed(1)} m/s</div>
           </div>
         `);
       usvMarkerRef.current = marker;
     }
 
-    // Smart centering: only recenter if needed
-    // - First telemetry: center immediately
-    // - Subsequent updates: only if vehicle is outside viewport
     if (isFirstTelemetry) {
-      // First telemetry: center map on vehicle
       mapRef.current.setView(position, mapRef.current.getZoom());
     } else {
-      // Check if vehicle is outside viewport bounds
       const bounds = mapRef.current.getBounds();
-      if (!bounds.contains(position)) {
-        // Vehicle outside viewport: smoothly pan to position
-        mapRef.current.panTo(position);
-      }
-      // Otherwise: vehicle still in viewport, no recentering needed
+      if (!bounds.contains(position)) mapRef.current.panTo(position);
     }
   }, [vehiclePosition]);
 
-  // Update trail
+  // Trail
   useEffect(() => {
     if (!mapRef.current) return;
-
-    if (trailPolylineRef.current) {
-      mapRef.current.removeLayer(trailPolylineRef.current);
-    }
-
+    if (trailPolylineRef.current) mapRef.current.removeLayer(trailPolylineRef.current);
     if (trail.length > 1) {
-      const polyline = L.polyline(trail, {
-        color: "#3b82f6",
-        weight: 3,
-        opacity: 0.6,
+      trailPolylineRef.current = L.polyline(trail, {
+        color: "#3b82f6", weight: 3, opacity: 0.6,
       }).addTo(mapRef.current);
-      trailPolylineRef.current = polyline;
     }
   }, [trail]);
 
-  // Update waypoints
+  // Waypoints
   useEffect(() => {
     if (!mapRef.current) return;
 
-    // Remove old waypoint markers
-    waypointMarkersRef.current.forEach(marker => {
-      mapRef.current?.removeLayer(marker);
-    });
+    waypointMarkersRef.current.forEach(m => mapRef.current?.removeLayer(m));
     waypointMarkersRef.current = [];
-
-    // Remove old waypoint polyline
     if (waypointPolylineRef.current) {
       mapRef.current.removeLayer(waypointPolylineRef.current);
       waypointPolylineRef.current = null;
     }
 
-    // Add new waypoint markers
     mission.waypoints.forEach((waypoint) => {
       const icon = L.divIcon({
         html: `
@@ -222,80 +197,31 @@ export function MapView({
       const marker = L.marker([waypoint.x, waypoint.y], { icon })
         .addTo(mapRef.current!)
         .bindPopup(`
-          <div class="text-sm">
-            <div class="mb-1">
-              <span style="font-weight: 600;">Waypoint ${waypoint.seq + 1}</span>
-            </div>
-            <div class="text-xs text-gray-600 font-mono">
-              ${waypoint.x.toFixed(6)}°, ${waypoint.y.toFixed(6)}°
-            </div>
+          <div class="text-sm" style="min-width:160px">
+            <div class="mb-1"><span style="font-weight:600">Waypoint ${waypoint.seq + 1}</span></div>
+            <div class="text-xs font-mono text-gray-600">${waypoint.x.toFixed(6)}°, ${waypoint.y.toFixed(6)}°</div>
+            <hr style="margin:6px 0;border-color:#e5e7eb"/>
+            <div class="text-xs text-gray-600">⏱ Dwell: <strong>${waypoint.dwellTime ?? 0}s</strong></div>
+            <div class="text-xs text-gray-600">🧪 Samples: <strong>${waypoint.samplesCount ?? 3}</strong></div>
           </div>
         `);
 
       waypointMarkersRef.current.push(marker);
     });
 
-    // Add waypoint path
     if (mission.waypoints.length > 1) {
-      const polyline = L.polyline(
+      waypointPolylineRef.current = L.polyline(
         mission.waypoints.map(wp => [wp.x, wp.y] as [number, number]),
-        {
-          color: "#ef4444",
-          weight: 2,
-          opacity: 0.7,
-          dashArray: "5, 10",
-        }
+        { color: "#ef4444", weight: 2, opacity: 0.7, dashArray: "5, 10" }
       ).addTo(mapRef.current);
-      waypointPolylineRef.current = polyline;
     }
   }, [mission.waypoints]);
 
   return (
     <div className="h-full flex flex-col">
-      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 p-3 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 flex-1">
-          <button
-            onClick={() => setAddWaypointMode(!addWaypointMode)}
-            className={`px-4 py-2 rounded-lg flex items-center gap-2 transition-colors ${addWaypointMode
-              ? "bg-blue-600 text-white"
-              : "bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600"
-              }`}
-          >
-            <MapPin className="size-4" />
-            {addWaypointMode ? "Click Map to Add" : "Add Waypoint"}
-          </button>
-          <button
-            onClick={onClearWaypoints}
-            disabled={mission.waypoints.length === 0}
-            className="px-4 py-2 rounded-lg flex items-center gap-2 bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-200 hover:bg-gray-200 dark:hover:bg-gray-600 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Trash2 className="size-4" />
-            Clear
-          </button>
-          <div className="flex items-center gap-1.5 px-3 py-1.5 bg-gray-100 dark:bg-gray-700 rounded-lg">
-            <label className="text-xs text-gray-600 dark:text-gray-400 whitespace-nowrap">Samples/WP</label>
-            <input
-              type="number"
-              min="1"
-              max="50"
-              value={samplesPerWaypoint}
-              onChange={(e) => {
-                const val = parseInt(e.target.value);
-                if (!isNaN(val) && val >= 1 && val <= 50) onSamplesChange(val);
-              }}
-              className="w-12 px-1.5 py-0.5 text-sm font-mono text-center bg-white dark:bg-gray-600 border border-gray-300 dark:border-gray-500 rounded text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-1 focus:ring-blue-500"
-            />
-          </div>
-          <button
-            onClick={onSendWaypoints}
-            disabled={mission.waypoints.length === 0}
-            className="px-4 py-2 rounded-lg flex items-center gap-2 bg-green-600 text-white hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-          >
-            <Send className="size-4" />
-            Send to USV ({mission.waypoints.length})
-          </button>
-        </div>
-        <div className="text-sm text-gray-600 dark:text-gray-400">
+      {/* ── Top bar (telemetry summary + panel toggle) ── */}
+      <div className="bg-white dark:bg-gray-800 border-b border-gray-200 dark:border-gray-700 px-3 py-2 flex items-center justify-between gap-2 text-sm">
+        <div className="text-gray-600 dark:text-gray-400">
           {vehiclePosition ? (
             <>
               <span className="font-mono">
@@ -309,48 +235,80 @@ export function MapView({
             <span className="text-xs italic">No telemetry</span>
           )}
         </div>
+
+        <button
+          id="toggle-mission-planner-btn"
+          onClick={() => setPlannerOpen(o => !o)}
+          title={plannerOpen ? "Hide mission planner" : "Show mission planner"}
+          className="flex items-center gap-1.5 px-2 py-1 rounded-lg text-xs font-medium text-gray-600 dark:text-gray-300 bg-gray-100 dark:bg-gray-700 hover:bg-blue-50 dark:hover:bg-blue-900/30 hover:text-blue-600 dark:hover:text-blue-400 transition-colors"
+        >
+          {plannerOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+          Mission Planner
+          {mission.waypoints.length > 0 && (
+            <span className="ml-1 size-5 rounded-full bg-red-500 text-white text-xs font-bold flex items-center justify-center">
+              {mission.waypoints.length}
+            </span>
+          )}
+        </button>
       </div>
 
-      <div className="flex-1 relative">
-        <div ref={mapContainerRef} className="h-full w-full" />
+      {/* ── Main split: map + optional planner panel ── */}
+      <div className="flex-1 flex overflow-hidden">
+        {/* Map */}
+        <div className="flex-1 relative">
+          <div ref={mapContainerRef} className="h-full w-full" />
 
-        {/* Heading Indicator Overlay */}
-        {vehiclePosition && (
-          <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4 border border-gray-200 dark:border-gray-700">
-            <div className="flex items-center gap-3">
-              <div className="relative">
+          {/* Heading indicator overlay */}
+          {vehiclePosition && (
+            <div className="absolute top-4 left-4 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-4 border border-gray-200 dark:border-gray-700 z-[1000]">
+              <div className="flex items-center gap-3">
                 <div className="size-16 rounded-full border-2 border-gray-300 dark:border-gray-600 flex items-center justify-center">
                   <Navigation
                     className="size-6 text-blue-600 dark:text-blue-400"
                     style={{ transform: `rotate(${vehiclePosition.heading}deg)` }}
                   />
                 </div>
-              </div>
-              <div>
-                <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">Heading</div>
-                <div className="text-2xl text-gray-900 dark:text-gray-100">{Math.round(vehiclePosition.heading)}°</div>
-                <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
-                  {vehiclePosition.heading >= 337.5 || vehiclePosition.heading < 22.5 ? 'N' :
-                    vehiclePosition.heading >= 22.5 && vehiclePosition.heading < 67.5 ? 'NE' :
-                      vehiclePosition.heading >= 67.5 && vehiclePosition.heading < 112.5 ? 'E' :
-                        vehiclePosition.heading >= 112.5 && vehiclePosition.heading < 157.5 ? 'SE' :
-                          vehiclePosition.heading >= 157.5 && vehiclePosition.heading < 202.5 ? 'S' :
-                            vehiclePosition.heading >= 202.5 && vehiclePosition.heading < 247.5 ? 'SW' :
-                              vehiclePosition.heading >= 247.5 && vehiclePosition.heading < 292.5 ? 'W' : 'NW'}
+                <div>
+                  <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">Heading</div>
+                  <div className="text-2xl text-gray-900 dark:text-gray-100">{Math.round(vehiclePosition.heading)}°</div>
+                  <div className="text-xs text-gray-500 dark:text-gray-400 mt-1">
+                    {vehiclePosition.heading >= 337.5 || vehiclePosition.heading < 22.5 ? 'N' :
+                      vehiclePosition.heading < 67.5 ? 'NE' :
+                        vehiclePosition.heading < 112.5 ? 'E' :
+                          vehiclePosition.heading < 157.5 ? 'SE' :
+                            vehiclePosition.heading < 202.5 ? 'S' :
+                              vehiclePosition.heading < 247.5 ? 'SW' :
+                                vehiclePosition.heading < 292.5 ? 'W' : 'NW'}
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
-        )}
+          )}
 
-        {/* Path History Info */}
-        <div className="absolute top-4 right-4 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-3 border border-gray-200 dark:border-gray-700">
-          <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">Path History</div>
-          <div className="flex items-center gap-2">
-            <div className="size-3 rounded-full bg-blue-500"></div>
-            <span className="text-sm text-gray-900 dark:text-gray-100">{trail.length} points</span>
+          {/* Path history badge */}
+          <div className="absolute top-4 right-4 bg-white dark:bg-gray-800 rounded-lg shadow-lg p-3 border border-gray-200 dark:border-gray-700 z-[1000]">
+            <div className="text-xs text-gray-600 dark:text-gray-400 mb-1">Path History</div>
+            <div className="flex items-center gap-2">
+              <div className="size-3 rounded-full bg-blue-500" />
+              <span className="text-sm text-gray-900 dark:text-gray-100">{trail.length} pts</span>
+            </div>
           </div>
         </div>
+
+        {/* Mission planner panel */}
+        {plannerOpen && (
+          <div className="w-72 shrink-0 border-l border-gray-200 dark:border-gray-700 overflow-hidden flex flex-col">
+            <MissionPlanner
+              mission={mission}
+              onMissionChange={onMissionChange}
+              addWaypointMode={addWaypointMode}
+              setAddWaypointMode={setAddWaypointMode}
+              onClearWaypoints={onClearWaypoints}
+              onSendWaypoints={onSendWaypoints}
+              uploadStatus={uploadStatus}
+            />
+          </div>
+        )}
       </div>
     </div>
   );

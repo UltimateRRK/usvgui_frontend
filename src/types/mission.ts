@@ -105,6 +105,19 @@ export interface Waypoint {
      * For USV: always 0 (surface vehicle)
      */
     z: number;
+
+    /**
+     * USV-specific: dwell time at this waypoint before advancing (seconds).
+     * Stored alongside MAVLink fields; sent to Pi via Firebase.
+     * Maps to param1 (hold time) on MAVLink upload.
+     */
+    dwellTime: number;
+
+    /**
+     * USV-specific: number of water sensor samples to collect at this waypoint.
+     * Sent to Pi via Firebase; not part of the MAVLink MISSION_ITEM format.
+     */
+    samplesCount: number;
 }
 
 /**
@@ -175,13 +188,15 @@ function createWaypoint(seq: number, lat: number, lon: number): Waypoint {
         command: MavCmd.MAV_CMD_NAV_WAYPOINT,
         current: false, // Always false in frontend; only seq=0 marked true during upload
         autocontinue: true,
-        param1: 0,  // Hold time: 0 seconds
+        param1: 0,  // Hold time: 0 seconds (mirrors dwellTime on upload)
         param2: 2,  // Acceptance radius: 2 meters (safe USV default)
         param3: 0,  // Pass radius: 0 (pass through)
         param4: 0,  // Yaw: 0 (auto-yaw to next waypoint)
         x: lat,     // MAVLink uses 'x' for latitude
         y: lon,     // MAVLink uses 'y' for longitude
         z: 0,       // Altitude: 0 for surface vehicle
+        dwellTime: 10,    // Default 10 s dwell for sampling
+        samplesCount: 3,  // Default 3 samples per waypoint
     };
 }
 
@@ -214,4 +229,56 @@ export function addWaypointToMission(
     };
 }
 
+/**
+ * Update a field on an existing waypoint by sequence number.
+ * Keeps all other waypoints unchanged.
+ */
+export function updateWaypointInMission(
+    mission: Mission,
+    seq: number,
+    patch: Partial<Waypoint>
+): Mission {
+    return {
+        ...mission,
+        waypoints: mission.waypoints.map(wp =>
+            wp.seq === seq ? { ...wp, ...patch } : wp
+        ),
+        metadata: { ...mission.metadata, updatedAt: new Date().toISOString() },
+    };
+}
 
+/**
+ * Remove a waypoint by sequence number and re-index remaining waypoints.
+ */
+export function removeWaypointFromMission(mission: Mission, seq: number): Mission {
+    const filtered = mission.waypoints
+        .filter(wp => wp.seq !== seq)
+        .map((wp, i) => ({ ...wp, seq: i }));
+    return {
+        ...mission,
+        waypoints: filtered,
+        metadata: { ...mission.metadata, updatedAt: new Date().toISOString() },
+    };
+}
+
+/**
+ * Move a waypoint up or down in the list and re-index.
+ */
+export function moveWaypointInMission(
+    mission: Mission,
+    seq: number,
+    direction: 'up' | 'down'
+): Mission {
+    const wps = [...mission.waypoints];
+    const idx = wps.findIndex(wp => wp.seq === seq);
+    if (idx < 0) return mission;
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= wps.length) return mission;
+    [wps[idx], wps[targetIdx]] = [wps[targetIdx], wps[idx]];
+    const reindexed = wps.map((wp, i) => ({ ...wp, seq: i }));
+    return {
+        ...mission,
+        waypoints: reindexed,
+        metadata: { ...mission.metadata, updatedAt: new Date().toISOString() },
+    };
+}

@@ -10,6 +10,7 @@ import { AlertsThresholds } from "./components/AlertsThresholds";
 import { DataExport } from "./components/DataExport";
 import { MissionLog, MissionLogEntry } from "./components/MissionLog";
 import { USVHealthStrip } from "./components/USVHealthStrip";
+import { MissionUploadStatus } from "./components/MissionPlanner";
 import { toast } from "sonner";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "./components/ThemeProvider";
@@ -77,9 +78,11 @@ export default function App() {
   const [vehiclePosition, setVehiclePosition] = useState<VehiclePosition | null>(null);
   const [trail, setTrail] = useState<[number, number][]>([]);
 
-  // Mission planning 
+  // Mission planning
   const [mission, setMission] = useState<Mission>(createEmptyMission());
   const [addWaypointMode, setAddWaypointMode] = useState(false);
+  const [uploadStatus, setUploadStatus] = useState<MissionUploadStatus>("idle");
+  const [lastMissionRef, setLastMissionRef] = useState<string | null>(null);
 
   // Expose mission in dev mode for debugging
   useEffect(() => {
@@ -89,12 +92,40 @@ export default function App() {
     }
   }, [mission, vehiclePosition]);
 
+  // =============================================
+  // FIREBASE: Listen to mission status updates from Pi
+  // =============================================
+  useEffect(() => {
+    if (!lastMissionRef) return;
+    let unsub: (() => void) | undefined;
+    authReady.then(() => {
+      const mRef = ref(database, `missions/${lastMissionRef}/status`);
+      unsub = onValue(mRef, (snap) => {
+        const status = snap.val() as string | null;
+        if (!status || status === "pending") return;
+        if (status === "accepted") {
+          setUploadStatus("accepted");
+          setMissionLog(prev => prev.map((e, i) =>
+            i === 0 ? { ...e, status: "Accepted", message: "Mission accepted by USV — executing." } : e
+          ));
+          toast.success("USV accepted the mission — executing!");
+        } else if (status === "rejected") {
+          setUploadStatus("rejected");
+          setMissionLog(prev => prev.map((e, i) =>
+            i === 0 ? { ...e, status: "Rejected", message: "Mission rejected by USV. Check Pi logs." } : e
+          ));
+          toast.error("USV rejected the mission.");
+        }
+      });
+    });
+    return () => unsub?.();
+  }, [lastMissionRef]);
+
   // Chart data
   const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
 
   // System settings
   const [sensorInterval, setSensorInterval] = useState(5); // in seconds, default matches Pi
-  const [samplesPerWaypoint, setSamplesPerWaypoint] = useState(3); // sensor readings per waypoint
 
   // =============================================
   // FIREBASE: Sync sensor interval with Pi
@@ -308,17 +339,21 @@ export default function App() {
     if (mission.waypoints.length > 0) {
       // Push mission to Firebase for the Pi to pick up
       const missionRef = push(ref(database, "missions"));
+      const missionKey = missionRef.key!;
       set(missionRef, {
         waypoints: mission.waypoints.map((wp) => ({
           lat: wp.x,
           lon: wp.y,
           seq: wp.seq,
+          dwellTime: wp.dwellTime ?? 0,
+          samplesCount: wp.samplesCount ?? 3,
         })),
-        samplesPerWaypoint: samplesPerWaypoint,
         status: "pending",
         created_at: new Date().toISOString(),
       });
 
+      setLastMissionRef(missionKey);
+      setUploadStatus("pending");
       // Create mission log entry
       const missionEntry: MissionLogEntry = {
         id: Date.now().toString(),
@@ -365,17 +400,17 @@ export default function App() {
           <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6" style={{ height: 'calc(100vh - 280px)', minHeight: '600px' }}>
             {/* Left Panel - Map */}
             <div className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-              <MapView
+        <MapView
                 vehiclePosition={vehiclePosition}
                 trail={trail}
                 mission={mission}
+                onMissionChange={setMission}
                 onAddWaypoint={handleAddWaypoint}
                 onClearWaypoints={handleClearWaypoints}
                 onSendWaypoints={handleSendWaypoints}
                 addWaypointMode={addWaypointMode}
                 setAddWaypointMode={setAddWaypointMode}
-                samplesPerWaypoint={samplesPerWaypoint}
-                onSamplesChange={setSamplesPerWaypoint}
+                uploadStatus={uploadStatus}
               />
             </div>
 
