@@ -44,6 +44,12 @@ export function MapView({
   const waypointMarkersRef = useRef<L.Marker[]>([]);
   const waypointPolylineRef = useRef<L.Polyline | null>(null);
 
+  // Tile layers
+  const streetLayerRef = useRef<L.TileLayer | null>(null);
+  const satelliteLayerRef = useRef<L.TileLayer | null>(null);
+  const labelsLayerRef = useRef<L.TileLayer | null>(null);
+
+  const [isSatellite, setIsSatellite] = useState(false);
   const [plannerOpen, setPlannerOpen] = useState(true);
 
   // Initialize map
@@ -58,9 +64,35 @@ export function MapView({
     }).setView(defaultCenter, 13);
     mapRef.current = map;
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    // Street layer (default)
+    const street = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
       attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-    }).addTo(map);
+      maxZoom: 19,
+    });
+    street.addTo(map);
+    streetLayerRef.current = street;
+
+    // Esri World Imagery (satellite)
+    const satellite = L.tileLayer(
+      "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      {
+        attribution:
+          "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community",
+        maxZoom: 19,
+      }
+    );
+    satelliteLayerRef.current = satellite;
+
+    // Labels overlay for satellite (OpenStreetMap semi-transparent road names)
+    const labels = L.tileLayer(
+      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+      {
+        attribution: '',
+        opacity: 0.45,
+        maxZoom: 19,
+      }
+    );
+    labelsLayerRef.current = labels;
 
     map.on("click", (e: L.LeafletMouseEvent) => {
       if (addWaypointMode) {
@@ -292,6 +324,49 @@ export function MapView({
               <div className="size-3 rounded-full bg-blue-500" />
               <span className="text-sm text-gray-900 dark:text-gray-100">{trail.length} pts</span>
             </div>
+          </div>
+
+          {/* ── Satellite / Map toggle (Google Maps-style) ── */}
+          <div className="absolute bottom-6 left-4 z-[1000] flex rounded-lg overflow-hidden shadow-lg border border-white/30" style={{ fontSize: '13px' }}>
+            <button
+              id="map-layer-street-btn"
+              onClick={() => {
+                if (isSatellite && mapRef.current) {
+                  mapRef.current.removeLayer(satelliteLayerRef.current!);
+                  mapRef.current.removeLayer(labelsLayerRef.current!);
+                  mapRef.current.addLayer(streetLayerRef.current!);
+                  setIsSatellite(false);
+                }
+              }}
+              className="px-3 py-1.5 font-semibold transition-colors"
+              style={{
+                background: isSatellite ? 'rgba(30,30,30,0.75)' : '#fff',
+                color: isSatellite ? '#d1d5db' : '#1d4ed8',
+                borderRight: '1px solid rgba(255,255,255,0.25)',
+              }}
+              title="Street map view"
+            >
+              Map
+            </button>
+            <button
+              id="map-layer-satellite-btn"
+              onClick={() => {
+                if (!isSatellite && mapRef.current) {
+                  mapRef.current.removeLayer(streetLayerRef.current!);
+                  mapRef.current.addLayer(satelliteLayerRef.current!);
+                  mapRef.current.addLayer(labelsLayerRef.current!);
+                  setIsSatellite(true);
+                }
+              }}
+              className="px-3 py-1.5 font-semibold transition-colors"
+              style={{
+                background: isSatellite ? '#fff' : 'rgba(30,30,30,0.75)',
+                color: isSatellite ? '#1d4ed8' : '#d1d5db',
+              }}
+              title="Esri satellite imagery"
+            >
+              Satellite
+            </button>
           </div>
         </div>
 
