@@ -47,7 +47,6 @@ export function MapView({
   // Tile layers
   const streetLayerRef = useRef<L.TileLayer | null>(null);
   const satelliteLayerRef = useRef<L.TileLayer | null>(null);
-  const labelsLayerRef = useRef<L.TileLayer | null>(null);
 
   const [isSatellite, setIsSatellite] = useState(false);
   const [plannerOpen, setPlannerOpen] = useState(true);
@@ -82,17 +81,6 @@ export function MapView({
       }
     );
     satelliteLayerRef.current = satellite;
-
-    // Labels overlay for satellite (OpenStreetMap semi-transparent road names)
-    const labels = L.tileLayer(
-      "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
-      {
-        attribution: '',
-        opacity: 0.45,
-        maxZoom: 19,
-      }
-    );
-    labelsLayerRef.current = labels;
 
     map.on("click", (e: L.LeafletMouseEvent) => {
       if (addWaypointMode) {
@@ -333,7 +321,6 @@ export function MapView({
               onClick={() => {
                 if (isSatellite && mapRef.current) {
                   mapRef.current.removeLayer(satelliteLayerRef.current!);
-                  mapRef.current.removeLayer(labelsLayerRef.current!);
                   mapRef.current.addLayer(streetLayerRef.current!);
                   setIsSatellite(false);
                 }
@@ -354,7 +341,6 @@ export function MapView({
                 if (!isSatellite && mapRef.current) {
                   mapRef.current.removeLayer(streetLayerRef.current!);
                   mapRef.current.addLayer(satelliteLayerRef.current!);
-                  mapRef.current.addLayer(labelsLayerRef.current!);
                   setIsSatellite(true);
                 }
               }}
