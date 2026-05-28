@@ -72,11 +72,14 @@ export function MapView({
     streetLayerRef.current = street;
 
     // Esri World Imagery (satellite)
+    // maxNativeZoom: Esri tiles only exist up to z18 in many regions;
+    // Leaflet will upscale z18 tiles at z19 instead of showing grey "not available" placeholders.
     const satellite = L.tileLayer(
       "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
       {
         attribution:
           "Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community",
+        maxNativeZoom: 18,
         maxZoom: 19,
       }
     );
