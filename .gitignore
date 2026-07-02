@@ -19,3 +19,9 @@ dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Pi backend files — not part of the frontend deployment
+guidelines/
+
+# AI workspace rules — local only
+.agents/

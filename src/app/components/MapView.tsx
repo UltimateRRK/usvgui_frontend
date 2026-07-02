@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
-import { Navigation, PanelRightOpen, PanelRightClose } from "lucide-react";
+import { Navigation, PanelRightOpen, PanelRightClose, X } from "lucide-react";
 import "leaflet/dist/leaflet.css";
 import { Mission } from "../../types/mission";
 import { VehiclePosition } from "../../types/bridge";
@@ -23,6 +23,10 @@ interface MapViewProps {
   addWaypointMode: boolean;
   setAddWaypointMode: (mode: boolean) => void;
   uploadStatus: MissionUploadStatus;
+  /** Optional mission replay waypoints — draws a purple dashed polyline */
+  replayTrail?: [number, number][] | null;
+  /** Called when the user dismisses the replay overlay */
+  onReplayClear?: () => void;
 }
 
 export function MapView({
@@ -36,6 +40,8 @@ export function MapView({
   addWaypointMode,
   setAddWaypointMode,
   uploadStatus,
+  replayTrail,
+  onReplayClear,
 }: MapViewProps) {
   const mapRef = useRef<L.Map | null>(null);
   const mapContainerRef = useRef<HTMLDivElement>(null);
@@ -43,6 +49,8 @@ export function MapView({
   const trailPolylineRef = useRef<L.Polyline | null>(null);
   const waypointMarkersRef = useRef<L.Marker[]>([]);
   const waypointPolylineRef = useRef<L.Polyline | null>(null);
+  const replayPolylineRef = useRef<L.Polyline | null>(null);
+  const replayMarkersRef = useRef<L.Marker[]>([]);
 
   // Tile layers
   const streetLayerRef = useRef<L.TileLayer | null>(null);
@@ -240,6 +248,47 @@ export function MapView({
     }
   }, [mission.waypoints]);
 
+  // Mission replay polyline (purple dashed) ─────────────────────────────────
+  useEffect(() => {
+    if (!mapRef.current) return;
+
+    // Clear old replay
+    if (replayPolylineRef.current) {
+      mapRef.current.removeLayer(replayPolylineRef.current);
+      replayPolylineRef.current = null;
+    }
+    replayMarkersRef.current.forEach((m) => mapRef.current?.removeLayer(m));
+    replayMarkersRef.current = [];
+
+    if (!replayTrail || replayTrail.length === 0) return;
+
+    // Draw purple dashed polyline
+    replayPolylineRef.current = L.polyline(replayTrail, {
+      color: "#a855f7",
+      weight: 3,
+      opacity: 0.8,
+      dashArray: "8, 8",
+    }).addTo(mapRef.current);
+
+    // Draw numbered markers for each replay waypoint
+    replayTrail.forEach(([lat, lon], i) => {
+      const icon = L.divIcon({
+        html: `<div style="background:#a855f7;color:#fff;border-radius:50%;width:26px;height:26px;display:flex;align-items:center;justify-content:center;font-weight:bold;font-size:11px;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);">${i + 1}</div>`,
+        className: "replay-wp-icon",
+        iconSize: [26, 26],
+        iconAnchor: [13, 13],
+      });
+      const marker = L.marker([lat, lon], { icon })
+        .addTo(mapRef.current!)
+        .bindPopup(`<div class="text-sm"><strong>Replay WP ${i + 1}</strong><br/><span class="font-mono text-xs">${lat.toFixed(6)}°, ${lon.toFixed(6)}°</span></div>`);
+      replayMarkersRef.current.push(marker);
+    });
+
+    // Pan map to show the replay trail
+    const bounds = L.latLngBounds(replayTrail);
+    mapRef.current.fitBounds(bounds, { padding: [60, 60] });
+  }, [replayTrail]);
+
   return (
     <div className="h-full flex flex-col">
       {/* ── Top bar (telemetry summary + panel toggle) ── */}
@@ -316,6 +365,23 @@ export function MapView({
               <span className="text-sm text-gray-900 dark:text-gray-100">{trail.length} pts</span>
             </div>
           </div>
+
+          {/* Replay active banner */}
+          {replayTrail && replayTrail.length > 0 && (
+            <div className="absolute bottom-16 left-1/2 -translate-x-1/2 z-[1000] flex items-center gap-2 bg-purple-600/90 backdrop-blur-sm text-white px-4 py-2 rounded-full shadow-lg text-sm font-medium">
+              <div className="size-2.5 rounded-full bg-purple-200 animate-pulse" />
+              Mission Replay — {replayTrail.length} waypoints
+              {onReplayClear && (
+                <button
+                  onClick={onReplayClear}
+                  title="Dismiss replay"
+                  className="ml-2 hover:text-purple-200 transition-colors"
+                >
+                  <X className="size-4" />
+                </button>
+              )}
+            </div>
+          )}
 
           {/* ── Satellite / Map toggle (Google Maps-style) ── */}
           <div className="absolute bottom-6 left-4 z-[1000] flex rounded-lg overflow-hidden shadow-lg border border-white/30" style={{ fontSize: '13px' }}>

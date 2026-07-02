@@ -1,498 +1,305 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Droplets, Thermometer, Gauge, Waves } from "lucide-react";
 import { Header } from "./components/Header";
 import { SensorCard } from "./components/SensorCard";
-import { WaterQualityStatus } from "./components/WaterQualityStatus";
 import { MapView } from "./components/MapView";
 import { SystemSettings } from "./components/SystemSettings";
 import { CombinedScientificData } from "./components/CombinedScientificData";
 import { AlertsThresholds } from "./components/AlertsThresholds";
 import { DataExport } from "./components/DataExport";
-import { MissionLog, MissionLogEntry } from "./components/MissionLog";
+import { MissionLog } from "./components/MissionLog";
 import { USVHealthStrip } from "./components/USVHealthStrip";
-import { MissionUploadStatus } from "./components/MissionPlanner";
-import { toast } from "sonner";
-import { Toaster } from "sonner";
+import { toast, Toaster } from "sonner";
 import { ThemeProvider } from "./components/ThemeProvider";
-import { Mission, createEmptyMission, addWaypointToMission } from "../types/mission";
-import { VehiclePosition } from "../types/bridge";
 import { database, authReady } from "../services/firebase";
-import { ref, onValue, query, limitToLast, push, set, get } from "firebase/database";
+import { ref, set, get } from "firebase/database";
 
+// Hooks
+import { useSensorData } from "../hooks/useSensorData";
+import { useTelemetry } from "../hooks/useTelemetry";
+import { useMission } from "../hooks/useMission";
 
-interface SensorData {
-  ph: number;
-  temperature: number;
-  tds: number;
-  turbidity: number;
-}
+// Types
+import { MissionPhase } from "../types/missionStatus";
 
-interface ChartDataPoint {
-  timestamp: string;
-  ph: number;
-  temperature: number;
-  turbidity: number;
-  tds: number;
-  waypoint_seq?: number;
-}
-
-// Device ID must match the Pi's DEVICE_ID
 const DEVICE_ID = "usv-01";
 
-// Calculate water quality status based on sensor readings
-function calculateWaterQuality(data: SensorData): "good" | "moderate" | "poor" {
-  let score = 0;
+// ── Water quality scoring ──────────────────────────────────────────────────────
 
-  // pH should be between 6.5 and 8.5
-  if (data.ph >= 6.5 && data.ph <= 8.5) score++;
-  else if (data.ph >= 6.0 && data.ph <= 9.0) score += 0.5;
-
-  // Temperature should be between 20-28°C
-  if (data.temperature >= 20 && data.temperature <= 28) score++;
-  else if (data.temperature >= 15 && data.temperature <= 32) score += 0.5;
-
-  // TDS should be less than 500 ppm
-  if (data.tds < 500) score++;
-  else if (data.tds < 600) score += 0.5;
-
-  // Turbidity should be less than 5 NTU
-  if (data.turbidity < 5) score++;
-  else if (data.turbidity < 10) score += 0.5;
-
-  if (score >= 3.5) return "good";
-  if (score >= 2) return "moderate";
-  return "poor";
+function calculateWaterQuality(data: {
+    ph: number; temperature: number; tds: number; turbidity: number;
+}): "good" | "moderate" | "poor" {
+    let score = 0;
+    if (data.ph >= 6.5 && data.ph <= 8.5) score++;
+    else if (data.ph >= 6.0 && data.ph <= 9.0) score += 0.5;
+    if (data.temperature >= 20 && data.temperature <= 28) score++;
+    else if (data.temperature >= 15 && data.temperature <= 32) score += 0.5;
+    if (data.tds < 500) score++;
+    else if (data.tds < 600) score += 0.5;
+    if (data.turbidity < 5) score++;
+    else if (data.turbidity < 10) score += 0.5;
+    if (score >= 3.5) return "good";
+    if (score >= 2) return "moderate";
+    return "poor";
 }
 
+// ── Connection quality (online / degraded / offline) ──────────────────────────
+
+function deriveConnectionStatus(
+    isOnline: boolean,
+    lastUpdate: Date
+): "online" | "degraded" | "offline" {
+    if (!isOnline) return "offline";
+    const ageSecs = (Date.now() - lastUpdate.getTime()) / 1000;
+    if (ageSecs < 10) return "online";
+    if (ageSecs < 60) return "degraded";
+    return "offline";
+}
+
+// ── App ────────────────────────────────────────────────────────────────────────
+
 export default function App() {
-  // Connection and GPS state 
-  const [isOnline, setIsOnline] = useState(false);
-  const [hasGpsFix, setHasGpsFix] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState(new Date());
+    // ── Data hooks ──
+    const { sensorData, chartData, isOnline, hasGpsFix, lastUpdate } = useSensorData();
+    const { vehiclePosition, trail } = useTelemetry();
+    const {
+        mission, setMission,
+        addWaypointMode, setAddWaypointMode,
+        uploadStatus, missionLog,
+        handleAddWaypoint, handleClearWaypoints, handleSendWaypoints,
+    } = useMission();
 
-  // Sensor data
-  const [sensorData, setSensorData] = useState<SensorData>({ ph: 0, temperature: 0, tds: 0, turbidity: 0 });
-  const [waterQuality, setWaterQuality] = useState<"good" | "moderate" | "poor">("good");
+    // ── Sensor interval (sampling mode) ──
+    const [sensorInterval, setSensorInterval] = useState(5);
 
-  // Vehicle telemetry (from bridge)
-  const [vehiclePosition, setVehiclePosition] = useState<VehiclePosition | null>(null);
-  const [trail, setTrail] = useState<[number, number][]>([]);
+    // ── Mission replay ──
+    const [replayTrail, setReplayTrail] = useState<[number, number][] | null>(null);
 
-  // Mission planning
-  const [mission, setMission] = useState<Mission>(createEmptyMission());
-  const [addWaypointMode, setAddWaypointMode] = useState(false);
-  const [uploadStatus, setUploadStatus] = useState<MissionUploadStatus>("idle");
-  const [lastMissionRef, setLastMissionRef] = useState<string | null>(null);
+    // ── Derived state ──
+    const waterQuality = useMemo(() => calculateWaterQuality(sensorData), [sensorData]);
+    const connectionStatus = useMemo(
+        () => deriveConnectionStatus(isOnline, lastUpdate),
+        [isOnline, lastUpdate]
+    );
+    const samplingMode = useMemo(() => {
+        if (sensorInterval <= 60)  return "Survey Mode";
+        if (sensorInterval <= 900) return "Routine Monitoring";
+        return "Low-Power / Standby";
+    }, [sensorInterval]);
 
-  // Expose mission in dev mode for debugging
-  useEffect(() => {
-    if (import.meta.env.DEV) {
-      (window as any).currentMission = mission;
-      (window as any).vehiclePosition = vehiclePosition;
-    }
-  }, [mission, vehiclePosition]);
+    // Derive mission phase from upload status
+    const missionPhase = useMemo((): MissionPhase => {
+        if (uploadStatus === "idle")      return "idle";
+        if (uploadStatus === "pending")   return "queued";
+        if (uploadStatus === "accepted")  return "auto";
+        if (uploadStatus === "executing") return "auto";
+        if (uploadStatus === "completed") return "completed";
+        if (uploadStatus === "rejected")  return "idle";
+        return "idle";
+    }, [uploadStatus]);
 
-  // =============================================
-  // FIREBASE: Listen to mission status updates from Pi
-  // =============================================
-  useEffect(() => {
-    if (!lastMissionRef) return;
-    let unsub: (() => void) | undefined;
-    authReady.then(() => {
-      const mRef = ref(database, `missions/${lastMissionRef}/status`);
-      unsub = onValue(mRef, (snap) => {
-        const status = snap.val() as string | null;
-        if (!status || status === "pending") return;
-        if (status === "accepted") {
-          setUploadStatus("accepted");
-          setMissionLog(prev => prev.map((e, i) =>
-            i === 0 ? { ...e, status: "Accepted", message: "Mission accepted by USV — executing." } : e
-          ));
-          toast.success("USV accepted the mission — executing!");
-        } else if (status === "rejected") {
-          setUploadStatus("rejected");
-          setMissionLog(prev => prev.map((e, i) =>
-            i === 0 ? { ...e, status: "Rejected", message: "Mission rejected by USV. Check Pi logs." } : e
-          ));
-          toast.error("USV rejected the mission.");
-        }
-      });
-    });
-    return () => unsub?.();
-  }, [lastMissionRef]);
+    // ── Sensor status from localStorage thresholds ──
+    const getSensorStatus = (
+        param: "ph" | "temperature" | "tds" | "turbidity"
+    ): "normal" | "warning" | "alert" => {
+        const defaults = {
+            ph:          { min: 6.5, max: 8.5 },
+            temperature: { min: 15,  max: 30  },
+            turbidity:   { min: 0,   max: 5   },
+            tds:         { min: 0,   max: 500 },
+        };
+        let thresholds = defaults;
+        try {
+            const saved = localStorage.getItem("waterQualityThresholds");
+            if (saved) thresholds = { ...defaults, ...JSON.parse(saved) };
+        } catch { /* use defaults */ }
 
-  // Chart data
-  const [chartData, setChartData] = useState<ChartDataPoint[]>([]);
+        const value = sensorData[param];
+        const t = thresholds[param];
 
-  // System settings
-  const [sensorInterval, setSensorInterval] = useState(5); // in seconds, default matches Pi
-
-  // =============================================
-  // FIREBASE: Sync sensor interval with Pi
-  // =============================================
-  useEffect(() => {
-    authReady.then(() => {
-      // Read the current interval from Firebase on mount
-      const configRef = ref(database, `config/${DEVICE_ID}/sensorInterval`);
-      get(configRef).then((snapshot) => {
-        const val = snapshot.val();
-        if (val && typeof val === 'number' && val >= 1) {
-          setSensorInterval(val);
-          console.log(`Loaded sensor interval from Firebase: ${val}s`);
-        }
-      }).catch((err) => {
-        console.warn("Could not read sensor interval from Firebase:", err.message);
-      });
-    });
-  }, []);
-
-  // Write interval to Firebase when user changes it
-  const handleIntervalChange = (seconds: number) => {
-    setSensorInterval(seconds);
-    authReady.then(() => {
-      const configRef = ref(database, `config/${DEVICE_ID}/sensorInterval`);
-      set(configRef, seconds)
-        .then(() => {
-          toast.success(`Sampling interval set to ${seconds}s — Pi will update on next cycle`);
-          console.log(`Wrote sensorInterval=${seconds} to Firebase`);
-        })
-        .catch((err) => {
-          toast.error("Failed to sync interval to Pi");
-          console.error("Firebase write error:", err.message);
-        });
-    });
-  };
-
-  // Mission log
-  const [missionLog, setMissionLog] = useState<MissionLogEntry[]>([]);
-
-  // Battery level (simulated)
-  const [batteryLevel, setBatteryLevel] = useState(85);
-
-  // Derive sampling mode from sensor interval
-  const getSamplingMode = () => {
-    if (sensorInterval <= 60) return 'Survey Mode';
-    if (sensorInterval <= 900) return 'Routine Monitoring';
-    return 'Low-Power / Standby';
-  };
-
-  // Compute sensor status from thresholds (shared with AlertsThresholds via localStorage)
-  const getSensorStatus = (param: 'ph' | 'temperature' | 'tds' | 'turbidity'): 'normal' | 'warning' | 'alert' => {
-    const defaults = {
-      ph: { min: 6.5, max: 8.5 },
-      temperature: { min: 15, max: 30 },
-      turbidity: { min: 0, max: 5 },
-      tds: { min: 0, max: 500 },
-    };
-    let thresholds = defaults;
-    try {
-      const saved = localStorage.getItem('waterQualityThresholds');
-      if (saved) thresholds = { ...defaults, ...JSON.parse(saved) };
-    } catch { /* use defaults */ }
-
-    const value = sensorData[param];
-    const t = thresholds[param];
-
-    // Critical thresholds (hardcoded extremes)
-    const critical: Record<string, (v: number) => boolean> = {
-      ph: (v) => v < 6.0 || v > 9.0,
-      temperature: (v) => v < 10 || v > 35,
-      turbidity: (v) => v > 10,
-      tds: (v) => v > 1000,
-    };
-
-    if (critical[param](value)) return 'alert';
-    if (param === 'turbidity' || param === 'tds') {
-      if (value > t.max) return 'warning';
-    } else {
-      if (value < t.min || value > t.max) return 'warning';
-    }
-    return 'normal';
-  };
-
-  // =============================================
-  // FIREBASE: Listen to real sensor data from Pi
-  // (waits for anonymous auth before subscribing)
-  // =============================================
-  useEffect(() => {
-    let unsubscribeConn: (() => void) | undefined;
-    let unsubscribeReadings: (() => void) | undefined;
-
-    authReady.then(() => {
-      console.log("Firebase DB object:", database);
-      console.log("Connecting to /readings...");
-
-      // Check Firebase connection state
-      const connRef = ref(database, ".info/connected");
-      unsubscribeConn = onValue(connRef, (snap) => {
-        console.log("Connected to Firebase:", snap.val());
-      });
-
-      const readingsQuery = query(ref(database, "readings"), limitToLast(20));
-      unsubscribeReadings = onValue(
-        readingsQuery,
-        (snapshot) => {
-          const data = snapshot.val();
-          console.log("Firebase snapshot received:", data);
-          if (!data) {
-            console.log("No data at /readings");
-            return;
-          }
-
-          const entries = Object.values(data) as any[];
-          const latest = entries[entries.length - 1];
-
-          // Update connection status — data is flowing
-          setIsOnline(true);
-          setLastUpdate(new Date(latest.timestamp || Date.now()));
-
-          // Update sensor cards with latest reading
-          const newSensorData: SensorData = {
-            ph: latest.ph ?? 0,
-            temperature: latest.temperature ?? 0,
-            tds: latest.tds ?? 0,
-            turbidity: latest.turbidity ?? 0,
-          };
-          setSensorData(newSensorData);
-          setWaterQuality(calculateWaterQuality(newSensorData));
-
-          // Check GPS
-          if (latest.lat && latest.lon && (latest.lat !== 0 || latest.lon !== 0)) {
-            setHasGpsFix(true);
-          }
-
-          // Update chart data from all entries
-          setChartData(
-            entries.map((e: any) => ({
-              timestamp: new Date(e.timestamp || Date.now()).toLocaleTimeString(
-                "en-US",
-                { hour: "2-digit", minute: "2-digit", second: "2-digit" }
-              ),
-              ph: e.ph ?? 0,
-              temperature: e.temperature ?? 0,
-              turbidity: e.turbidity ?? 0,
-              tds: e.tds ?? 0,
-              waypoint_seq: e.waypoint_seq,
-            }))
-          );
-        },
-        (error) => {
-          console.error("Firebase READ ERROR:", error.message);
-        }
-      );
-    });
-
-    return () => {
-      unsubscribeConn?.();
-      unsubscribeReadings?.();
-    };
-  }, []);
-
-  // =============================================
-  // FIREBASE: Listen to vehicle position (future: Pixhawk GPS)
-  // (waits for anonymous auth before subscribing)
-  // =============================================
-  useEffect(() => {
-    let unsubscribe: (() => void) | undefined;
-
-    authReady.then(() => {
-      const posRef = ref(database, `telemetry/${DEVICE_ID}/current`);
-      unsubscribe = onValue(posRef, (snapshot) => {
-        const pos = snapshot.val();
-        if (!pos) return;
-
-        const vehiclePos: VehiclePosition = {
-          lat: pos.lat,
-          lon: pos.lon,
-          alt: pos.alt ?? 0,
-          heading: pos.heading ?? 0,
-          groundspeed: pos.groundspeed ?? 0,
-          timestamp: pos.timestamp ?? new Date().toISOString(),
+        const critical: Record<string, (v: number) => boolean> = {
+            ph:          (v) => v < 6.0 || v > 9.0,
+            temperature: (v) => v < 10   || v > 35,
+            turbidity:   (v) => v > 10,
+            tds:         (v) => v > 1000,
         };
 
-        setVehiclePosition(vehiclePos);
-        setTrail((prevTrail) => {
-          const newTrail = [
-            ...prevTrail,
-            [vehiclePos.lat, vehiclePos.lon] as [number, number],
-          ];
-          return newTrail.slice(-300);
+        if (critical[param](value)) return "alert";
+        if (param === "turbidity" || param === "tds") {
+            if (value > t.max) return "warning";
+        } else {
+            if (value < t.min || value > t.max) return "warning";
+        }
+        return "normal";
+    };
+
+    // ── Sampling interval — read from Firebase on mount, write on change ──
+    useEffect(() => {
+        authReady.then(() => {
+            get(ref(database, `config/${DEVICE_ID}/sensorInterval`)).then((snap) => {
+                const val = snap.val();
+                if (val && typeof val === "number" && val >= 1) setSensorInterval(val);
+            }).catch(() => {/* use default */});
         });
-      });
-    });
+    }, []);
 
-    return () => unsubscribe?.();
-  }, []);
+    const handleIntervalChange = (seconds: number) => {
+        setSensorInterval(seconds);
+        authReady.then(() => {
+            set(ref(database, `config/${DEVICE_ID}/sensorInterval`), seconds)
+                .then(() => toast.success(`Sampling interval set to ${seconds}s`))
+                .catch(() => toast.error("Failed to sync interval to Pi"));
+        });
+    };
 
-  const handleAddWaypoint = (position: [number, number]) => {
-    setMission(prev => addWaypointToMission(prev, position[0], position[1]));
-    setAddWaypointMode(false);
-    toast.success(`Waypoint ${mission.waypoints.length + 1} added`);
-  };
+    // ── Dev debug ──
+    useEffect(() => {
+        if (import.meta.env.DEV) {
+            (window as any).currentMission = mission;
+            (window as any).vehiclePosition = vehiclePosition;
+        }
+    }, [mission, vehiclePosition]);
 
-  const handleClearWaypoints = () => {
-    setMission(createEmptyMission());
-    toast.info("Waypoints cleared");
-  };
+    // ── Replay handlers ──
+    const handleMissionSelect = (wps: [number, number][]) => {
+        setReplayTrail(wps);
+        window.scrollTo({ top: 0, behavior: "smooth" });
+    };
+    const handleReplayClear = () => {
+        setReplayTrail(null);
+    };
 
-  const handleSendWaypoints = () => {
-    if (mission.waypoints.length > 0) {
-      // Push mission to Firebase for the Pi to pick up
-      const missionRef = push(ref(database, "missions"));
-      const missionKey = missionRef.key!;
-      set(missionRef, {
-        waypoints: mission.waypoints.map((wp) => ({
-          lat: wp.x,
-          lon: wp.y,
-          seq: wp.seq,
-          dwellTime: wp.dwellTime ?? 0,
-          samplesCount: wp.samplesCount ?? 3,
-        })),
-        status: "pending",
-        created_at: new Date().toISOString(),
-      });
+    return (
+        <ThemeProvider>
+            <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col">
+                <Toaster position="top-right" />
 
-      setLastMissionRef(missionKey);
-      setUploadStatus("pending");
-      // Create mission log entry
-      const missionEntry: MissionLogEntry = {
-        id: Date.now().toString(),
-        timestamp: new Date().toLocaleString('en-US', {
-          year: 'numeric',
-          month: 'short',
-          day: 'numeric',
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-        }),
-        mission: mission,
-        waypointCount: mission.waypoints.length,
-        status: "Pending",
-        message: `Mission uploaded to Firebase. Waiting for USV acknowledgement (${mission.waypoints.length} waypoint${mission.waypoints.length !== 1 ? 's' : ''}).`,
-      };
+                <Header
+                    isOnline={isOnline}
+                    hasGpsFix={hasGpsFix}
+                    lastUpdate={lastUpdate}
+                />
 
-      setMissionLog(prev => [missionEntry, ...prev]);
+                <USVHealthStrip
+                    connectionStatus={connectionStatus}
+                    lastTelemetryTimestamp={lastUpdate}
+                    samplingMode={samplingMode}
+                    vehiclePosition={vehiclePosition}
+                    missionPhase={missionPhase}
+                />
 
-      toast.success(`${mission.waypoints.length} waypoints sent to Firebase for USV`);
-    }
-  };
+                <main className="flex-1 p-6">
+                    {/* Main Split View */}
+                    <div
+                        className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6"
+                        style={{ height: "calc(100vh - 280px)", minHeight: "600px" }}
+                    >
+                        {/* Left Panel — Map */}
+                        <div className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
+                            <MapView
+                                vehiclePosition={vehiclePosition}
+                                trail={trail}
+                                mission={mission}
+                                onMissionChange={setMission}
+                                onAddWaypoint={handleAddWaypoint}
+                                onClearWaypoints={handleClearWaypoints}
+                                onSendWaypoints={handleSendWaypoints}
+                                addWaypointMode={addWaypointMode}
+                                setAddWaypointMode={setAddWaypointMode}
+                                uploadStatus={uploadStatus}
+                                replayTrail={replayTrail}
+                                onReplayClear={handleReplayClear}
+                            />
+                        </div>
 
-  return (
-    <ThemeProvider>
-      <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col">
-        <Toaster position="top-right" />
+                        {/* Right Panel — Sensor Telemetry */}
+                        <div className="lg:col-span-2 flex flex-col gap-4 overflow-y-auto pr-2">
+                            <div className="flex-1 flex flex-col">
+                                <h2 className="text-xl font-bold mb-3 text-gray-700 dark:text-gray-200 text-center">
+                                    Sensor Data
+                                </h2>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
+                                    <SensorCard
+                                        title="pH Level"
+                                        value={sensorData.ph}
+                                        unit="pH"
+                                        icon={<Droplets className="size-5 text-white" />}
+                                        status={getSensorStatus("ph")}
+                                        timestamp={lastUpdate.toLocaleTimeString("en-US")}
+                                    />
+                                    <SensorCard
+                                        title="Temperature"
+                                        value={sensorData.temperature}
+                                        unit="°C"
+                                        icon={<Thermometer className="size-5 text-white" />}
+                                        status={getSensorStatus("temperature")}
+                                        timestamp={lastUpdate.toLocaleTimeString("en-US")}
+                                    />
+                                    <SensorCard
+                                        title="TDS"
+                                        value={sensorData.tds}
+                                        unit="ppm"
+                                        icon={<Gauge className="size-5 text-white" />}
+                                        status={getSensorStatus("tds")}
+                                        timestamp={lastUpdate.toLocaleTimeString("en-US")}
+                                    />
+                                    <SensorCard
+                                        title="Turbidity"
+                                        value={sensorData.turbidity}
+                                        unit="NTU"
+                                        icon={<Waves className="size-5 text-white" />}
+                                        status={getSensorStatus("turbidity")}
+                                        timestamp={lastUpdate.toLocaleTimeString("en-US")}
+                                    />
+                                </div>
+                            </div>
+                        </div>
+                    </div>
 
-        <Header
-          isOnline={isOnline}
-          hasGpsFix={hasGpsFix}
-          lastUpdate={lastUpdate}
-        />
+                    {/* Combined Scientific Data */}
+                    <div className="mt-6">
+                        <CombinedScientificData data={chartData} currentData={sensorData} />
+                    </div>
 
-        <USVHealthStrip
-          connectionStatus={isOnline ? 'online' : 'offline'}
-          lastTelemetryTimestamp={lastUpdate}
-          batteryLevel={batteryLevel}
-          samplingMode={getSamplingMode()}
-        />
+                    {/* Alerts & Thresholds */}
+                    <div className="mt-6">
+                        <AlertsThresholds sensorData={sensorData} />
+                    </div>
 
-        <main className="flex-1 p-6">
-          {/* Main Split View */}
-          <div className="grid grid-cols-1 lg:grid-cols-5 gap-6 mb-6" style={{ height: 'calc(100vh - 280px)', minHeight: '600px' }}>
-            {/* Left Panel - Map */}
-            <div className="lg:col-span-3 bg-white dark:bg-gray-800 rounded-lg shadow-lg overflow-hidden">
-        <MapView
-                vehiclePosition={vehiclePosition}
-                trail={trail}
-                mission={mission}
-                onMissionChange={setMission}
-                onAddWaypoint={handleAddWaypoint}
-                onClearWaypoints={handleClearWaypoints}
-                onSendWaypoints={handleSendWaypoints}
-                addWaypointMode={addWaypointMode}
-                setAddWaypointMode={setAddWaypointMode}
-                uploadStatus={uploadStatus}
-              />
+                    {/* Data Export */}
+                    <div className="mt-6">
+                        <DataExport
+                            data={chartData}
+                            onMissionSelect={handleMissionSelect}
+                        />
+                    </div>
+
+                    {/* System Settings */}
+                    <div className="mt-6">
+                        <SystemSettings
+                            sensorInterval={sensorInterval}
+                            onIntervalChange={handleIntervalChange}
+                            vehiclePosition={vehiclePosition}
+                        />
+                    </div>
+
+                    {/* Mission Log */}
+                    <div className="mt-6">
+                        <MissionLog
+                            missions={missionLog}
+                            chartData={chartData}
+                            onMissionSelect={handleMissionSelect}
+                        />
+                    </div>
+                </main>
+
+                {/* Footer */}
+                <footer className="bg-gray-800 dark:bg-gray-950 text-gray-300 py-4 px-6">
+                    <div className="flex items-center justify-center text-sm">
+                        <div>Made with rrk</div>
+                    </div>
+                </footer>
             </div>
-
-            {/* Right Panel - Telemetry */}
-            <div className="lg:col-span-2 flex flex-col gap-4 overflow-y-auto pr-2">
-              <div className="flex-1 flex flex-col">
-                <h2 className="text-xl font-bold mb-3 text-gray-700 dark:text-gray-200 text-center">Sensor Data</h2>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 flex-1">
-                  <SensorCard
-                    title="pH Level"
-                    value={sensorData.ph}
-                    unit="pH"
-                    icon={<Droplets className="size-5 text-white" />}
-                    status={getSensorStatus('ph')}
-                    timestamp={lastUpdate.toLocaleTimeString('en-US')}
-                  />
-                  <SensorCard
-                    title="Temperature"
-                    value={sensorData.temperature}
-                    unit="°C"
-                    icon={<Thermometer className="size-5 text-white" />}
-                    status={getSensorStatus('temperature')}
-                    timestamp={lastUpdate.toLocaleTimeString('en-US')}
-                  />
-                  <SensorCard
-                    title="TDS"
-                    value={sensorData.tds}
-                    unit="ppm"
-                    icon={<Gauge className="size-5 text-white" />}
-                    status={getSensorStatus('tds')}
-                    timestamp={lastUpdate.toLocaleTimeString('en-US')}
-                  />
-                  <SensorCard
-                    title="Turbidity"
-                    value={sensorData.turbidity}
-                    unit="NTU"
-                    icon={<Waves className="size-5 text-white" />}
-                    status={getSensorStatus('turbidity')}
-                    timestamp={lastUpdate.toLocaleTimeString('en-US')}
-                  />
-                </div>
-              </div>
-
-            </div>
-          </div>
-
-          {/* Combined Scientific Data */}
-          <div className="mt-6">
-            <CombinedScientificData data={chartData} currentData={sensorData} />
-          </div>
-
-          {/* Alerts Thresholds */}
-          <div className="mt-6">
-            <AlertsThresholds sensorData={sensorData} />
-          </div>
-
-          {/* Data Export */}
-          <div className="mt-6">
-            <DataExport data={chartData} />
-          </div>
-
-          {/* System Settings */}
-          <div className="mt-6">
-            <SystemSettings
-              sensorInterval={sensorInterval}
-              onIntervalChange={handleIntervalChange}
-            />
-          </div>
-
-          {/* Mission Log */}
-          <div className="mt-6">
-            <MissionLog missions={missionLog} />
-          </div>
-        </main>
-
-        {/* Footer */}
-        <footer className="bg-gray-800 dark:bg-gray-950 text-gray-300 py-4 px-6">
-          <div className="flex items-center justify-center text-sm">
-            <div>Made with rrk</div>
-          </div>
-        </footer>
-      </div>
-    </ThemeProvider>
-  );
+        </ThemeProvider>
+    );
 }

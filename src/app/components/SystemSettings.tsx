@@ -1,9 +1,13 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Settings, Gauge, Info, AlertTriangle, ChevronDown, Zap, Radio } from "lucide-react";
+import { database, authReady } from '../../services/firebase';
+import { ref, set, get } from 'firebase/database';
+import { VehiclePosition } from '../../types/bridge';
 
 interface SystemSettingsProps {
   sensorInterval: number;
   onIntervalChange: (seconds: number) => void;
+  vehiclePosition?: VehiclePosition | null;
 }
 
 interface SamplingMode {
@@ -20,11 +24,69 @@ interface SamplingMode {
   context: string;
 }
 
-export function SystemSettings({ sensorInterval, onIntervalChange }: SystemSettingsProps) {
+export function SystemSettings({ sensorInterval, onIntervalChange, vehiclePosition }: SystemSettingsProps) {
   const [activeTab, setActiveTab] = useState<"sensors" | "info">("sensors");
   const [advancedExpanded, setAdvancedExpanded] = useState(false);
   const [useCustomInput, setUseCustomInput] = useState(false);
   const [customValue, setCustomValue] = useState('');
+
+  // State for default waypoint
+  const [defaultLat, setDefaultLat] = useState('')
+  const [defaultLon, setDefaultLon] = useState('')
+  const [defaultDwell, setDefaultDwell] = useState(20)
+  const [defaultSamples, setDefaultSamples] = useState(3)
+  const [saveStatus, setSaveStatus] = useState('')
+
+  // Load existing default on mount
+  useEffect(() => {
+    authReady.then(() => {
+      const defaultRef = ref(
+        database,
+        `config/usv-01/defaultWaypoints`
+      )
+      get(defaultRef).then(snapshot => {
+        const data = snapshot.val()
+        if (data && data[0]) {
+          setDefaultLat(String(data[0].lat))
+          setDefaultLon(String(data[0].lon))
+          setDefaultDwell(data[0].dwellTime || 20)
+          setDefaultSamples(data[0].samplesCount || 3)
+        }
+      })
+    })
+  }, [])
+
+  // Save default waypoint to Firebase
+  const saveDefaultWaypoint = () => {
+    const lat = parseFloat(defaultLat)
+    const lon = parseFloat(defaultLon)
+
+    if (isNaN(lat) || isNaN(lon)) {
+      setSaveStatus('Invalid coordinates')
+      return
+    }
+
+    authReady.then(() => {
+      const defaultRef = ref(
+        database,
+        `config/usv-01/defaultWaypoints`
+      )
+      set(defaultRef, [
+        {
+          seq:          0,
+          lat:          lat,
+          lon:          lon,
+          dwellTime:    defaultDwell,
+          samplesCount: defaultSamples
+        }
+      ]).then(() => {
+        setSaveStatus('Saved successfully')
+        setTimeout(() => setSaveStatus(''), 3000)
+      }).catch(err => {
+        setSaveStatus(`Error: ${err.message}`)
+      })
+    })
+  }
 
   const samplingModes: SamplingMode[] = [
     {
@@ -240,6 +302,110 @@ export function SystemSettings({ sensorInterval, onIntervalChange }: SystemSetti
                 <span className="text-sm text-green-600 dark:text-green-400">✓ {activeModeData.context}</span>
               </div>
             </div>
+          </div>
+
+          {/* Default Test Waypoint */}
+          <div className="border-t border-gray-200 dark:border-gray-700 pt-4 mb-6">
+            <h3 className="text-sm font-semibold text-gray-900 dark:text-gray-100 mb-3 uppercase tracking-wide">
+              Default Test Waypoint
+            </h3>
+            <p className="text-sm text-gray-600 dark:text-gray-400 mb-4">
+              Used when no mission is sent from the map.
+              Pi reads this on startup.
+            </p>
+
+            <button
+              onClick={() => {
+                if (vehiclePosition) {
+                  setDefaultLat(String(vehiclePosition.lat.toFixed(6)))
+                  setDefaultLon(String(vehiclePosition.lon.toFixed(6)))
+                }
+              }}
+              className="w-full py-2 text-sm text-gray-600 dark:text-gray-400
+                         border border-gray-300 dark:border-gray-600 rounded-lg
+                         hover:border-gray-400 dark:hover:border-gray-500 mb-4 transition-colors bg-gray-50 dark:bg-gray-800"
+            >
+              Use Current USV Position
+            </button>
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Latitude</label>
+                <input
+                  type="number"
+                  step="0.000001"
+                  value={defaultLat}
+                  onChange={e => setDefaultLat(e.target.value)}
+                  placeholder="15.480290"
+                  className="w-full mt-1 px-3 py-2 text-sm
+                             bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600
+                             rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-700 dark:text-gray-300">Longitude</label>
+                <input
+                  type="number"
+                  step="0.000001"
+                  value={defaultLon}
+                  onChange={e => setDefaultLon(e.target.value)}
+                  placeholder="73.856720"
+                  className="w-full mt-1 px-3 py-2 text-sm
+                             bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600
+                             rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div>
+                <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                  Dwell time (s)
+                </label>
+                <input
+                  type="number"
+                  value={defaultDwell}
+                  onChange={e => setDefaultDwell(Number(e.target.value))}
+                  min={5} max={300} step={5}
+                  className="w-full mt-1 px-3 py-2 text-sm
+                             bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600
+                             rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-gray-700 dark:text-gray-300">
+                  Samples/wp
+                </label>
+                <input
+                  type="number"
+                  value={defaultSamples}
+                  onChange={e => setDefaultSamples(Number(e.target.value))}
+                  min={1} max={20}
+                  className="w-full mt-1 px-3 py-2 text-sm
+                             bg-white dark:bg-gray-700 border border-gray-300 dark:border-gray-600
+                             rounded-md text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                />
+              </div>
+            </div>
+
+            <button
+              onClick={saveDefaultWaypoint}
+              className="w-full py-2 text-sm font-medium
+                         bg-blue-600 hover:bg-blue-700
+                         text-white rounded-lg transition-colors"
+            >
+              Save Default Waypoint
+            </button>
+
+            {saveStatus && (
+              <p className={`mt-2 text-sm text-center ${
+                saveStatus.includes('Error')
+                  ? 'text-red-500 dark:text-red-400'
+                  : 'text-green-600 dark:text-green-400'
+              }`}>
+                {saveStatus}
+              </p>
+            )}
           </div>
 
           {/* Advanced Settings - Collapsible */}

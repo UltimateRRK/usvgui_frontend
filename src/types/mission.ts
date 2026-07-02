@@ -282,3 +282,44 @@ export function moveWaypointInMission(
         metadata: { ...mission.metadata, updatedAt: new Date().toISOString() },
     };
 }
+
+/**
+ * Compute the great-circle distance between two lat/lon points (metres).
+ * Uses the Haversine formula — accurate enough for USV waypoint spacing checks.
+ */
+export function haversineMetres(
+    lat1: number, lon1: number,
+    lat2: number, lon2: number
+): number {
+    const R = 6_371_000; // Earth radius in metres
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const dLat = toRad(lat2 - lat1);
+    const dLon = toRad(lon2 - lon1);
+    const a =
+        Math.sin(dLat / 2) ** 2 +
+        Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Compute the total route distance for a mission (metres).
+ */
+export function missionTotalDistanceMetres(mission: Mission): number {
+    const wps = mission.waypoints;
+    let total = 0;
+    for (let i = 1; i < wps.length; i++) {
+        total += haversineMetres(wps[i - 1].x, wps[i - 1].y, wps[i].x, wps[i].y);
+    }
+    return total;
+}
+
+/**
+ * Estimate total mission time in seconds.
+ * Assumes ~1 m/s cruise speed between waypoints plus all dwell times.
+ */
+export function missionEstimatedSeconds(mission: Mission, cruiseMps = 1.0): number {
+    const travelTime = missionTotalDistanceMetres(mission) / cruiseMps;
+    const dwellTime = mission.waypoints.reduce((sum, wp) => sum + (wp.dwellTime ?? 0), 0);
+    return Math.round(travelTime + dwellTime);
+}
+
