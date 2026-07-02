@@ -56,9 +56,13 @@ export function useTelemetry(): UseTelemetryResult {
                 setVehiclePosition(vehiclePos);
                 setTrail((prevTrail) => {
                     const lastPoint = prevTrail[prevTrail.length - 1];
-                    // Only add to the trail if the boat actually moved
-                    if (lastPoint && lastPoint[0] === vehiclePos.lat && lastPoint[1] === vehiclePos.lon) {
-                        return prevTrail;
+                    // Only add to the trail if the boat actually moved (GPS jitter filter: ~1.1 meters)
+                    if (lastPoint) {
+                        const dLat = Math.abs(lastPoint[0] - vehiclePos.lat);
+                        const dLon = Math.abs(lastPoint[1] - vehiclePos.lon);
+                        if (dLat < 0.00001 && dLon < 0.00001) {
+                            return prevTrail;
+                        }
                     }
                     const next: [number, number][] = [
                         ...prevTrail,
