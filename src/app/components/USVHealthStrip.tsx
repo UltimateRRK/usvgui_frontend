@@ -192,7 +192,9 @@ export function USVHealthStrip({
                                 heartbeatAgeSecs !== null
                                     ? heartbeatAgeSecs < 5
                                         ? "OK"
-                                        : `${heartbeatAgeSecs}s ago`
+                                        : heartbeatAgeSecs < 60
+                                            ? `${heartbeatAgeSecs}s ago`
+                                            : `${Math.floor(heartbeatAgeSecs / 60)}m ago`
                                     : "–"
                             }
                             valueClass={
@@ -212,7 +214,7 @@ export function USVHealthStrip({
                         label="Battery"
                         value={
                             bPct !== undefined
-                                ? <span>{bPct}%{bV !== undefined ? <span className="ml-1 text-xs font-normal text-gray-500">{bV.toFixed(1)}V</span> : null}</span>
+                                ? <span>{Math.round(bPct)}%{bV !== undefined ? <span className="ml-1 text-xs font-normal text-gray-500">{bV.toFixed(1)}V</span> : null}</span>
                                 : "–"
                         }
                         valueClass={batteryClass(bPct)}
