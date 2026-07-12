@@ -157,6 +157,14 @@ export function USVHealthStrip({
                 </div>
             )}
 
+            {/* ── Pixhawk Alert banner ─────────────────────────────────────── */}
+            {vehiclePosition?.statusText && (
+                <div className="flex items-center justify-center gap-2 bg-red-50 dark:bg-red-900/30 border-b border-red-200 dark:border-red-800 px-4 py-1.5 text-red-700 dark:text-red-300 text-xs font-medium">
+                    <AlertTriangle className="size-3.5 shrink-0" />
+                    Pixhawk Alert: {vehiclePosition.statusText}
+                </div>
+            )}
+
             {/* ── Health fields row ────────────────────────────────────────── */}
             <div className="px-6 py-2.5 overflow-x-auto">
                 <div className="flex items-center gap-6 min-w-max mx-auto justify-center flex-wrap">

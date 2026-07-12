@@ -51,6 +51,7 @@ export function useTelemetry(): UseTelemetryResult {
                     armed: pos.armed ?? undefined,
                     currentWp: pos.currentWp ?? undefined,
                     lastHeartbeatAt: pos.lastHeartbeatAt ?? undefined,
+                    statusText: pos.statusText ?? undefined,
                 };
 
                 setVehiclePosition(vehiclePos);
