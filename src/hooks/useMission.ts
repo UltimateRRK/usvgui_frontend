@@ -3,14 +3,17 @@
  *
  * All mission planning state and Firebase handshake logic.
  * Encapsulates: mission state, upload flow, mission log, waypoint handlers.
+ *
+ * All user-facing status messages are routed to the System Console via
+ * the onLog callback — toast popups are no longer used here.
  */
 
 import { useState, useEffect } from "react";
-import { ref, push, set, onValue } from "firebase/database";
+import { ref, push, set, onValue, get } from "firebase/database";
 import { database, authReady } from "../services/firebase";
-import { toast } from "sonner";
 import { Mission, createEmptyMission, addWaypointToMission } from "../types/mission";
 import { MissionLogEntry } from "../types/missionLog";
+import { ConsoleEntry, makeLog } from "../types/console";
 
 export type MissionUploadStatus = "idle" | "pending" | "accepted" | "rejected" | "executing" | "completed";
 
@@ -26,7 +29,7 @@ export interface UseMissionResult {
     handleSendWaypoints: () => void;
 }
 
-export function useMission(): UseMissionResult {
+export function useMission(onLog: (entry: ConsoleEntry) => void): UseMissionResult {
     const [mission, setMission] = useState<Mission>(createEmptyMission());
     const [addWaypointMode, setAddWaypointMode] = useState(false);
     const [uploadStatus, setUploadStatus] = useState<MissionUploadStatus>("idle");
@@ -53,9 +56,9 @@ export function useMission(): UseMissionResult {
                                 : e
                         )
                     );
-                    toast.success("USV accepted the mission — executing!");
+                    onLog(makeLog("success", "USV accepted the mission — executing!"));
+
                 } else if (status === "active") {
-                    // Pi transitions accepted → active once the mission starts running
                     setUploadStatus("executing");
                     setMissionLog((prev) =>
                         prev.map((e, i) =>
@@ -64,26 +67,36 @@ export function useMission(): UseMissionResult {
                                 : e
                         )
                     );
+                    onLog(makeLog("nav", "Mission is now ACTIVE on the USV. Navigating to first waypoint..."));
+
                 } else if (status === "rejected") {
                     setUploadStatus("rejected");
-                    setMissionLog((prev) =>
-                        prev.map((e, i) =>
-                            i === 0
-                                ? { ...e, status: "Rejected", message: "Mission rejected by USV. Check Pi logs." }
-                                : e
-                        )
-                    );
-                    toast.error("USV rejected the mission.");
+                    get(ref(database, `missions/${lastMissionRef}/reason`)).then((rSnap) => {
+                        const reason = rSnap.val() || "Check Pi logs";
+                        setMissionLog((prev) =>
+                            prev.map((e, i) =>
+                                i === 0
+                                    ? { ...e, status: "Rejected", message: `Rejected: ${reason}` }
+                                    : e
+                            )
+                        );
+                        onLog(makeLog("error", `Mission REJECTED by USV: ${reason}`));
+                    });
+
                 } else if (status === "failsafe") {
                     setUploadStatus("rejected");
-                    setMissionLog((prev) =>
-                        prev.map((e, i) =>
-                            i === 0
-                                ? { ...e, status: "Rejected", message: "⚠️ FAILSAFE triggered — mission aborted. Check vehicle." }
-                                : e
-                        )
-                    );
-                    toast.error("⚠️ FAILSAFE — USV mission aborted!", { duration: 8000 });
+                    get(ref(database, `missions/${lastMissionRef}/reason`)).then((rSnap) => {
+                        const reason = rSnap.val() || "Unknown hardware/timeout failure";
+                        setMissionLog((prev) =>
+                            prev.map((e, i) =>
+                                i === 0
+                                    ? { ...e, status: "Rejected", message: `⚠️ FAILSAFE: ${reason}` }
+                                    : e
+                            )
+                        );
+                        onLog(makeLog("error", `⚠️  FAILSAFE TRIGGERED — ${reason}`));
+                    });
+
                 } else if (status === "completed") {
                     setUploadStatus("completed");
                     setMissionLog((prev) =>
@@ -93,7 +106,7 @@ export function useMission(): UseMissionResult {
                                 : e
                         )
                     );
-                    toast.success("Mission completed!");
+                    onLog(makeLog("success", "Mission completed successfully. USV returning home."));
                 }
             });
         });
@@ -102,19 +115,25 @@ export function useMission(): UseMissionResult {
     }, [lastMissionRef]);
 
     const handleAddWaypoint = (position: [number, number]) => {
-        setMission((prev) => addWaypointToMission(prev, position[0], position[1]));
+        setMission((prev) => {
+            const updated = addWaypointToMission(prev, position[0], position[1]);
+            onLog(makeLog("info", `Waypoint ${updated.waypoints.length} added at (${position[0].toFixed(5)}, ${position[1].toFixed(5)}).`));
+            return updated;
+        });
         setAddWaypointMode(false);
-        toast.success(`Waypoint added`);
     };
 
     const handleClearWaypoints = () => {
         setMission(createEmptyMission());
         setUploadStatus("idle");
-        toast.info("Waypoints cleared");
+        onLog(makeLog("system", "All waypoints cleared."));
     };
 
     const handleSendWaypoints = () => {
-        if (mission.waypoints.length === 0) return;
+        if (mission.waypoints.length === 0) {
+            onLog(makeLog("warn", "Send aborted — no waypoints defined."));
+            return;
+        }
 
         authReady.then(() => {
             const missionRef = push(ref(database, "missions"));
@@ -153,7 +172,7 @@ export function useMission(): UseMissionResult {
             };
 
             setMissionLog((prev) => [missionEntry, ...prev]);
-            toast.success(`${mission.waypoints.length} waypoints sent to USV`);
+            onLog(makeLog("info", `Mission uploaded to Firebase (${mission.waypoints.length} waypoint${mission.waypoints.length !== 1 ? "s" : ""}). Waiting for USV acknowledgement...`));
         });
     };
 

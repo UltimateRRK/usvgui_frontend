@@ -9,10 +9,12 @@ import { AlertsThresholds } from "./components/AlertsThresholds";
 import { DataExport } from "./components/DataExport";
 import { MissionLog } from "./components/MissionLog";
 import { USVHealthStrip } from "./components/USVHealthStrip";
-import { toast, Toaster } from "sonner";
+import { NavPanel } from "./components/NavPanel";
+import { SystemConsole } from "./components/SystemConsole";
 import { ThemeProvider } from "./components/ThemeProvider";
 import { database, authReady } from "../services/firebase";
 import { ref, set, get } from "firebase/database";
+import { makeLog, ConsoleEntry } from "../types/console";
 
 // Hooks
 import { useSensorData } from "../hooks/useSensorData";
@@ -59,6 +61,13 @@ function deriveConnectionStatus(
 // ── App ────────────────────────────────────────────────────────────────────────
 
 export default function App() {
+    // ── System Console log ──
+    const [consoleLogs, setConsoleLogs] = useState<ConsoleEntry[]>(() => [
+        makeLog("system", "USV Ground Control Station initialised."),
+    ]);
+    const addLog = (entry: ConsoleEntry) =>
+        setConsoleLogs((prev) => [...prev.slice(-199), entry]); // keep last 200
+
     // ── Data hooks ──
     const { sensorData, chartData, isOnline, hasGpsFix, lastUpdate } = useSensorData();
     const { vehiclePosition, trail } = useTelemetry();
@@ -67,7 +76,7 @@ export default function App() {
         addWaypointMode, setAddWaypointMode,
         uploadStatus, missionLog,
         handleAddWaypoint, handleClearWaypoints, handleSendWaypoints,
-    } = useMission();
+    } = useMission(addLog);
 
     // ── Sensor interval (sampling mode) ──
     const [sensorInterval, setSensorInterval] = useState(5);
@@ -76,6 +85,7 @@ export default function App() {
     const [replayTrail, setReplayTrail] = useState<[number, number][] | null>(null);
 
     // ── Derived state ──
+
     const waterQuality = useMemo(() => calculateWaterQuality(sensorData), [sensorData]);
     const connectionStatus = useMemo(
         () => deriveConnectionStatus(isOnline, lastUpdate),
@@ -147,10 +157,27 @@ export default function App() {
         setSensorInterval(seconds);
         authReady.then(() => {
             set(ref(database, `config/${DEVICE_ID}/sensorInterval`), seconds)
-                .then(() => toast.success(`Sampling interval set to ${seconds}s`))
-                .catch(() => toast.error("Failed to sync interval to Pi"));
+                .then(() => addLog(makeLog("system", `Sampling interval updated to ${seconds}s.`)))
+                .catch(() => addLog(makeLog("error", "Failed to sync sampling interval to Pi.")));
         });
     };
+
+    // ── Console: mission status events (handled inside useMission via onLog) ──
+    // ── Console: connection status ──
+    useEffect(() => {
+        if (isOnline)
+            addLog(makeLog("success", "Firebase RTDB connected — live data streaming."));
+        else
+            addLog(makeLog("warn", "Firebase connection lost. Reconnecting..."));
+    }, [isOnline]);
+
+    // ── Console: GPS fix ──
+    useEffect(() => {
+        if (hasGpsFix)
+            addLog(makeLog("success", "GPS fix acquired."));
+        else
+            addLog(makeLog("warn", "GPS fix lost."));
+    }, [hasGpsFix]);
 
     // ── Dev debug ──
     useEffect(() => {
@@ -172,7 +199,6 @@ export default function App() {
     return (
         <ThemeProvider>
             <div className="min-h-screen bg-gray-50 dark:bg-gray-900 flex flex-col">
-                <Toaster position="top-right" />
 
                 <Header
                     isOnline={isOnline}
@@ -254,6 +280,16 @@ export default function App() {
                                 </div>
                             </div>
                         </div>
+                    </div>
+
+                    {/* Nav Panel + System Console */}
+                    <div className="mt-6 grid grid-cols-1 lg:grid-cols-2 gap-6" style={{ minHeight: "280px" }}>
+                        <NavPanel
+                            vehiclePosition={vehiclePosition}
+                            targetBearing={null}
+                            distanceToWp={null}
+                        />
+                        <SystemConsole entries={consoleLogs} />
                     </div>
 
                     {/* Combined Scientific Data */}
